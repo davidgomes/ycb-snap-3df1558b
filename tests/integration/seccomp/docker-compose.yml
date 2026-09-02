@@ -1,0 +1,9 @@
+version: "3"
+services:
+  web1:
+    image: busybox
+    command: sh -c "mkdir /tmp_test"
+    security_opt:
+      # Currently only absolute path works, like this:
+      # - seccomp:/.../tests/integration/seccomp/default.json
+      - seccomp:./default.json
