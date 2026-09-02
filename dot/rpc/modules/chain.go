@@ -1,0 +1,257 @@
+// Copyright 2021 ChainSafe Systems (ON)
+// SPDX-License-Identifier: LGPL-3.0-only
+
+package modules
+
+import (
+	"fmt"
+	"net/http"
+	"regexp"
+	"strconv"
+
+	"github.com/ChainSafe/gossamer/dot/types"
+	"github.com/ChainSafe/gossamer/lib/common"
+	"github.com/ChainSafe/gossamer/pkg/scale"
+)
+
+// ChainHashRequest Hash as a string
+type ChainHashRequest struct {
+	Bhash *common.Hash
+}
+
+// ChainBlockNumberRequest interface can accept string, float64 or []
+type ChainBlockNumberRequest struct {
+	Block interface{}
+}
+
+// ChainFinalizedHeadRequest ...
+type ChainFinalizedHeadRequest struct {
+	Round uint64
+	SetID uint64
+}
+
+// ChainBlockHeaderResponse struct
+type ChainBlockHeaderResponse struct {
+	ParentHash     string                 `json:"parentHash"`
+	Number         string                 `json:"number"`
+	StateRoot      string                 `json:"stateRoot"`
+	ExtrinsicsRoot string                 `json:"extrinsicsRoot"`
+	Digest         ChainBlockHeaderDigest `json:"digest"`
+}
+
+// ChainBlockHeaderDigest struct to hold digest logs
+type ChainBlockHeaderDigest struct {
+	Logs []string `json:"logs"`
+}
+
+// ChainBlock struct to hold json instance of a block
+type ChainBlock struct {
+	Header ChainBlockHeaderResponse `json:"header"`
+	Body   []string                 `json:"extrinsics"`
+}
+
+// ChainBlockResponse struct
+type ChainBlockResponse struct {
+	Block ChainBlock `json:"block"`
+}
+
+// ChainHashResponse interface to handle response
+type ChainHashResponse interface{}
+
+// ChainModule is an RPC module providing access to storage API points.
+type ChainModule struct {
+	blockAPI BlockAPI
+}
+
+// NewChainModule creates a new State module.
+func NewChainModule(api BlockAPI) *ChainModule {
+	return &ChainModule{
+		blockAPI: api,
+	}
+}
+
+// GetBlock Get header and body of a relay chain block. If no block hash is provided,
+// the latest block body will be returned.
+func (cm *ChainModule) GetBlock(r *http.Request, req *ChainHashRequest, res *ChainBlockResponse) error {
+	hash := cm.hashLookup(req)
+	block, err := cm.blockAPI.GetBlockByHash(hash)
+	if err != nil {
+		return err
+	}
+
+	res.Block.Header, err = HeaderToJSON(block.Header)
+	if err != nil {
+		return err
+	}
+
+	if block.Body != nil {
+		ext, err := block.Body.AsEncodedExtrinsics()
+		if err != nil {
+			return err
+		}
+		for _, e := range ext {
+			res.Block.Body = append(res.Block.Body, e.String())
+		}
+	}
+	return nil
+}
+
+// GetBlockHash Get hash of the 'n-th' block in the canon chain. If no parameters are provided,
+// the latest block hash gets returned.
+func (cm *ChainModule) GetBlockHash(r *http.Request, req *ChainBlockNumberRequest, res *ChainHashResponse) error {
+	// if request is empty, return highest hash
+	if req.Block == nil {
+		*res = cm.blockAPI.BestBlockHash().String()
+		return nil
+	}
+
+	val, err := cm.unwindRequest(req.Block)
+	// if result only returns 1 value, just use that (instead of array)
+	if len(val) == 1 {
+		*res = val[0]
+	} else {
+		*res = val
+	}
+
+	return err
+}
+
+// GetFinalizedHead returns the most recently finalised block hash
+func (cm *ChainModule) GetFinalizedHead(r *http.Request, req *EmptyRequest, res *ChainHashResponse) error {
+	h, err := cm.blockAPI.GetHighestFinalisedHash()
+	if err != nil {
+		return err
+	}
+
+	*res = common.BytesToHex(h[:])
+	return nil
+}
+
+// GetFinalizedHeadByRound returns the hash of the block finalised at the given round and setID
+func (cm *ChainModule) GetFinalizedHeadByRound(
+	r *http.Request, req *ChainFinalizedHeadRequest, res *ChainHashResponse) error {
+	h, err := cm.blockAPI.GetFinalisedHash(req.Round, req.SetID)
+	if err != nil {
+		return err
+	}
+
+	*res = common.BytesToHex(h[:])
+	return nil
+}
+
+// GetHeader Get header of a relay chain block. If no block hash is provided, the latest block header will be returned.
+func (cm *ChainModule) GetHeader(r *http.Request, req *ChainHashRequest, res *ChainBlockHeaderResponse) error {
+	hash := cm.hashLookup(req)
+	header, err := cm.blockAPI.GetHeader(hash)
+	if err != nil {
+		return err
+	}
+
+	*res, err = HeaderToJSON(*header)
+	return err
+}
+
+// SubscribeFinalizedHeads handled by websocket handler, but this func should remain
+// here so it's added to rpc_methods list
+func (cm *ChainModule) SubscribeFinalizedHeads(_ *http.Request, _ *EmptyRequest, _ *ChainBlockHeaderResponse) error {
+	return ErrSubscriptionTransport
+}
+
+// SubscribeNewHead handled by websocket handler, but this func should remain
+// here so it's added to rpc_methods list
+func (cm *ChainModule) SubscribeNewHead(r *http.Request, req *EmptyRequest, res *ChainBlockHeaderResponse) error {
+	return ErrSubscriptionTransport
+}
+
+// SubscribeNewHeads handled by websocket handler, but this func should remain
+// here so it's added to rpc_methods list
+func (cm *ChainModule) SubscribeNewHeads(r *http.Request, req *EmptyRequest, res *ChainBlockHeaderResponse) error {
+	return ErrSubscriptionTransport
+}
+
+func (cm *ChainModule) hashLookup(req *ChainHashRequest) common.Hash {
+	if req.Bhash == nil {
+		hash := cm.blockAPI.BestBlockHash()
+		return hash
+	}
+	return *req.Bhash
+}
+
+// unwindRequest takes request interface slice and makes call for each element
+func (cm *ChainModule) unwindRequest(req interface{}) ([]string, error) {
+	res := make([]string, 0)
+	switch x := (req).(type) {
+	case []interface{}:
+		for _, v := range x {
+			u, err := cm.unwindRequest(v)
+			if err != nil {
+				return nil, err
+			}
+			res = append(res, u...)
+		}
+	case interface{}:
+		h, err := cm.lookupHashByInterface(x)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, h)
+	}
+	return res, nil
+}
+
+// lookupHashByInterface parses given interface to determine block number, then
+// finds hash for that block number
+func (cm *ChainModule) lookupHashByInterface(i interface{}) (string, error) {
+	var num uint
+	switch x := i.(type) {
+	case float64:
+		num = uint(x)
+	case string:
+		// remove leading 0x (if there is one)
+		re, err := regexp.Compile(`0x`)
+		if err != nil {
+			return "", err
+		}
+		x = re.ReplaceAllString(x, "")
+
+		xUint64, err := strconv.ParseUint(x, 10, 64)
+		if err != nil {
+			return "", err
+		}
+		num = uint(xUint64)
+
+	default:
+		return "", fmt.Errorf("unknown request number type: %T", x)
+	}
+
+	h, err := cm.blockAPI.GetHashByNumber(num)
+	if err != nil {
+		return "", err
+	}
+
+	return h.String(), nil
+}
+
+// HeaderToJSON converts types.Header to ChainBlockHeaderResponse
+func HeaderToJSON(header types.Header) (ChainBlockHeaderResponse, error) {
+	res := ChainBlockHeaderResponse{
+		ParentHash:     header.ParentHash.String(),
+		StateRoot:      header.StateRoot.String(),
+		ExtrinsicsRoot: header.ExtrinsicsRoot.String(),
+		Digest:         ChainBlockHeaderDigest{},
+	}
+	if header.Number == 0 {
+		res.Number = "0x00" // needs two 0 chars for hex decoding to work
+	} else {
+		res.Number = common.UintToHex(header.Number)
+	}
+
+	for _, item := range header.Digest {
+		enc, err := scale.Marshal(item)
+		if err != nil {
+			return ChainBlockHeaderResponse{}, err
+		}
+		res.Digest.Logs = append(res.Digest.Logs, common.BytesToHex(enc))
+	}
+	return res, nil
+}
