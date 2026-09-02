@@ -1,0 +1,25 @@
+type Query {
+    """The default unnamend repository."""
+    defaultRepository: Repository
+    """Access a repository by reference/name."""
+    repository(ref: String!): Repository
+}
+
+type Mutation {
+    """Create a new bug"""
+    newBug(input: NewBugInput!): NewBugPayload!
+    """Add a new comment to a bug"""
+    addComment(input: AddCommentInput!): AddCommentPayload!
+    """Add or remove a set of label on a bug"""
+    changeLabels(input: ChangeLabelInput): ChangeLabelPayload!
+    """Change a bug's status to open"""
+    openBug(input: OpenBugInput!): OpenBugPayload!
+    """Change a bug's status to closed"""
+    closeBug(input: CloseBugInput!): CloseBugPayload!
+    """Change a bug's title"""
+    setTitle(input: SetTitleInput!): SetTitlePayload!
+    """Commit write the pending operations into storage. This mutation fail if nothing is pending"""
+    commit(input: CommitInput!): CommitPayload!
+    """Commit write the pending operations into storage. This mutation succed if nothing is pending"""
+    commitAsNeeded(input: CommitAsNeededInput!): CommitAsNeededPayload!
+}
