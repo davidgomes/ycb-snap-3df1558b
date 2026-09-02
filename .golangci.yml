@@ -1,0 +1,155 @@
+# See https://golangci-lint.run/usage/configuration/#config-file
+
+run:
+  timeout: 10m
+
+  build-tags:
+    - integration
+
+linters-settings:
+  govet:
+    # report about shadowed variables
+    shadow: true
+    excludes:
+      - printf
+
+  revive:
+    severity: warning
+    confidence: 0.8
+
+  lll:
+    # max line length, lines longer will be reported. Default is 120.
+    # '\t' is counted as 1 character by default, and can be changed with the tab-width option
+    line-length: 120
+    # tab width in spaces. Default to 1.
+    tab-width: 1
+  
+  nilnil:
+    checked-types:
+      - func
+      - iface
+      - map
+      - chan
+
+  gosec:
+    excludes:
+      - G115
+      - G301
+      - G306
+
+  gosimple:
+    excludes:
+      - S1009
+  
+
+  misspell:
+    locale: UK
+    ignore-words:
+      - gossamer
+      - flavor
+      - finalized
+      - finalize
+      - initialize
+      - color
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - goconst
+    - gocyclo
+    - gofmt
+    - goimports
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nilerr
+    - nilnil
+    - nolintlint
+    - revive
+    - staticcheck
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - unused
+  disable:
+    - typecheck
+
+issues:
+  exclude-files:
+    - .*mock_.*\.go
+    - .*mocks\/.*\.go
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+        - ineffassign
+
+    - text: "exported: exported var Err*"
+      linters:
+        - revive
+
+    - text: "exported: exported method [a-zA-Z]*.MarshalJSON should have comment or be unexported"
+      linters:
+        - revive
+
+    - text: 'shadow: declaration of "err" shadows declaration*'
+      linters:
+        - govet
+
+    - text: 'shadow: declaration of "ok" shadows declaration*'
+      linters:
+        - govet
+
+    - text: 'printf: non-constant format*'
+      linters:
+        - govet
+
+    - text: 'return both a `nil` error and an invalid value*'
+      linters:
+        - nilnil
+
+    - linters:
+        - revive
+      text: "package comment should be of the form"
+
+    - linters:
+        - nolintlint
+      source: "^//nolint:revive"
+
+    # Exclude lll issues for long lines with go:generate
+    - linters:
+        - lll
+      source: "^//go:generate "
+
+    - linters:
+        - lll
+      path: lib/runtime/wasmer/imports\.go
+      source: "^// extern "
+
+    - linters:
+        - lll
+      path: lib/runtime/wasmer/imports\.go
+      source: '{"ext_.+", ext_.+, C.ext_.+},$'
+
+    - source: "// https://"
+      linters:
+        - lll
+
+    - source: "// See https://"
+      linters:
+        - lll
+
+    - text: "G204: Subprocess launched with variable"
+      linters:
+        - gosec
+
+  exclude-use-default: false

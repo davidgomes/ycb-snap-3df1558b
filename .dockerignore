@@ -1,0 +1,16 @@
+/.git
+/.githooks
+/.github
+!/.github/workflows/staging
+/docker
+/docs
+/.deepsource.toml
+/.dockerignore
+/.gitattributes
+/.gitignore
+/.releaserc
+/.codecov.yml
+/docker-compose.yml
+/Dockerfile
+/Dockerfile.staging
+/README.md

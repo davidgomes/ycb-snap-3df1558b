@@ -1,0 +1,35 @@
+# Test binary built with `go test -c`
+*.test
+
+# LiteIDE, VSCode, and Sublime
+*.idea
+*.vscode
+*.sublime
+*.devcontainer
+
+# Output of go coverage tool when used with LiteIDE
+*.out
+*.log
+
+/bin
+
+*.key
+!test-key.key
+!test-key-password.key
+!devnet/alice.node.key
+*.wasm
+
+test_data
+trie_putandget_failed_test_data_*
+tmp
+
+# node_modules used by polkadot.js/api tests
+tests/polkadotjs_test/node_modules
+!tests/polkadotjs_test/test/*.wasm
+
+# Ignore rust target dir
+lib/erasure/rustlib/target
+
+*.so
+
+.DS_Store
