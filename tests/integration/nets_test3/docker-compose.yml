@@ -1,0 +1,45 @@
+version: "3"
+networks:
+    net1:
+    net2:
+services:
+    web1:
+      image: busybox
+      #container_name: web1
+      hostname: web1
+      command: ["/bin/busybox", "httpd", "-f", "-h", "/var/www/html", "-p", "8001"]
+      working_dir: /var/www/html
+      networks:
+      - net1
+      ports:
+        - 8001:8001
+      volumes:
+        - ./test1.txt:/var/www/html/index.txt:ro,z
+    web2:
+      image: busybox
+      #container_name: web2
+      hostname: web2
+      command: ["/bin/busybox", "httpd", "-f", "-h", "/var/www/html", "-p", "8001"]
+      working_dir: /var/www/html
+      networks:
+      - net1
+      - net2
+      ports:
+        - 8002:8001
+      volumes:
+        - ./test2.txt:/var/www/html/index.txt:ro,z
+    web3:
+      image: busybox
+      command: ["/bin/busybox", "httpd", "-f", "-h", "/var/www/html", "-p", "8001"]
+      working_dir: /var/www/html
+      networks:
+        net1:
+          aliases:
+          - alias11
+          - alias12
+        net2:
+          aliases:
+          - alias21
+      volumes:
+        - ./test3.txt:/var/www/html/index.txt:ro,z
+

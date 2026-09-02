@@ -1,0 +1,34 @@
+default_install_hook_types: [pre-commit, commit-msg]
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        types: [python]
+  - repo: https://github.com/pycqa/flake8
+    rev: 6.0.0
+    hooks:
+      - id: flake8
+        types: [python]
+  - repo: local
+    hooks:
+      - id: pylint
+        name: pylint
+        entry: pylint
+        language: system
+        types: [python]
+        args:
+          [
+            "-rn", # Only display messages
+            "-sn", # Don't display the score
+            "--rcfile=.pylintrc", # Link to your config file
+          ]
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.2.5
+    hooks:
+    - id: codespell
+
+  - repo: https://github.com/gklein/check_signoff
+    rev: v1.0.5
+    hooks:
+      - id: check-signoff

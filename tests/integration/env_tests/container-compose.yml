@@ -1,0 +1,18 @@
+version: "3"
+
+name: my-project-name
+
+services:
+  env-test:
+    image: busybox
+    command: sh -c "export | grep ZZ"
+    environment:
+      ZZVAR1: myval1
+      ZZVAR2: 2-$ZZVAR1
+      ZZVAR3: 3-$ZZVAR2
+
+  project-name-test:
+    image: busybox
+    command: sh -c "echo $$PNAME"
+    environment:
+      PNAME: ${COMPOSE_PROJECT_NAME}
