@@ -1,0 +1,10 @@
+#import "./IdentityFragment.graphql"
+
+query CurrentIdentity {
+  repository {
+    name
+    userIdentity {
+      ...Identity
+    }
+  }
+}

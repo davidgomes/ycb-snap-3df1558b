@@ -1,0 +1,6 @@
+type Query {
+    """Access a repository by reference/name. If no ref is given, the default repository is returned if any."""
+    repository(ref: String): Repository
+}
+
+type Mutation # See each entity mutations

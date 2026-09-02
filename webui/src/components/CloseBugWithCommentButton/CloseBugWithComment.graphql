@@ -1,0 +1,10 @@
+mutation AddCommentAndCloseBug($input: BugAddCommentAndCloseInput!) {
+  bugAddCommentAndClose(input: $input) {
+    statusOperation {
+      status
+    }
+    commentOperation {
+      message
+    }
+  }
+}

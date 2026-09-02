@@ -1,0 +1,10 @@
+#import "./IdentityFragment.graphql"
+
+query GetUserById($userId: String!) {
+  repository {
+    name
+    identity(prefix: $userId) {
+      ...Identity
+    }
+  }
+}

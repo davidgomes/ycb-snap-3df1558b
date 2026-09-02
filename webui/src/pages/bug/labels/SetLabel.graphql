@@ -1,0 +1,19 @@
+mutation SetLabel($input: BugChangeLabelInput) {
+  bugChangeLabels(input: $input) {
+    results {
+      status
+      label {
+        name
+        color {
+          R
+        }
+        color {
+          G
+        }
+        color {
+          B
+        }
+      }
+    }
+  }
+}
