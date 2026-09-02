@@ -1,0 +1,1386 @@
+// Copyright 2024 ChainSafe Systems (ON)
+// SPDX-License-Identifier: LGPL-3.0-only
+
+package backing_test
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	availabilitystore "github.com/ChainSafe/gossamer/dot/parachain/availability-store"
+	"github.com/ChainSafe/gossamer/dot/parachain/backing"
+	candidatevalidation "github.com/ChainSafe/gossamer/dot/parachain/candidate-validation"
+	collatorprotocolmessages "github.com/ChainSafe/gossamer/dot/parachain/collator-protocol/messages"
+	"github.com/ChainSafe/gossamer/dot/parachain/overseer"
+	prospectiveparachains "github.com/ChainSafe/gossamer/dot/parachain/prospective-parachains/messages"
+	provisionermessages "github.com/ChainSafe/gossamer/dot/parachain/provisioner/messages"
+	statementedistributionmessages "github.com/ChainSafe/gossamer/dot/parachain/statement-distribution/messages"
+	parachaintypes "github.com/ChainSafe/gossamer/dot/parachain/types"
+	"github.com/ChainSafe/gossamer/lib/common"
+	"github.com/ChainSafe/gossamer/lib/crypto"
+	"github.com/ChainSafe/gossamer/lib/erasure"
+	"github.com/ChainSafe/gossamer/lib/keystore"
+	wazero_runtime "github.com/ChainSafe/gossamer/lib/runtime/wazero"
+	"github.com/ChainSafe/gossamer/pkg/scale"
+	"github.com/stretchr/testify/require"
+	gomock "go.uber.org/mock/gomock"
+)
+
+// Ensure overseer stops before test completion
+func stopOverseerAndWaitForCompletion(overseer *overseer.MockableOverseer) {
+	overseer.Stop()
+	time.Sleep(100 * time.Millisecond) // Give some time for any ongoing processes to finish
+}
+
+// register the backing subsystem, run backing subsystem, start overseer
+func initBackingAndOverseerMock(t *testing.T) (*backing.CandidateBacking, *overseer.MockableOverseer) {
+	t.Helper()
+
+	overseerMock := overseer.NewMockableOverseer(t, true)
+
+	backing := backing.New(overseerMock.SubsystemsToOverseer)
+	overseerMock.RegisterSubsystem(backing)
+	backing.SubSystemToOverseer = overseerMock.GetSubsystemToOverseerChannel()
+
+	backing.Keystore = keystore.NewBasicKeystore("test", crypto.Sr25519Type)
+
+	overseerMock.Start()
+
+	return backing, overseerMock
+}
+
+func getDummyHash(t *testing.T, num byte) common.Hash {
+	t.Helper()
+
+	hash := common.Hash{}
+	for i := 0; i < 32; i++ {
+		hash[i] = num
+	}
+	return hash
+}
+
+func dummyPVD(t *testing.T) parachaintypes.PersistedValidationData {
+	t.Helper()
+
+	return parachaintypes.PersistedValidationData{
+		ParentHead:             parachaintypes.HeadData{Data: []byte{7, 8, 9}},
+		RelayParentNumber:      0,
+		RelayParentStorageRoot: getDummyHash(t, 0),
+		MaxPovSize:             1024,
+	}
+}
+
+func makeErasureRoot(
+	t *testing.T,
+	numOfValidators uint,
+	pov parachaintypes.PoV,
+	pvd parachaintypes.PersistedValidationData,
+) common.Hash {
+	t.Helper()
+
+	availableData := availabilitystore.AvailableData{
+		PoV:            pov,
+		ValidationData: pvd,
+	}
+
+	dataBytes, err := scale.Marshal(availableData)
+	require.NoError(t, err)
+
+	chunks, err := erasure.ObtainChunks(numOfValidators, dataBytes)
+	require.NoError(t, err)
+
+	trie, err := erasure.ChunksToTrie(chunks)
+	require.NoError(t, err)
+
+	root, err := trie.Hash()
+	require.NoError(t, err)
+
+	return root
+}
+
+// newCommittedCandidate creates a new committed candidate receipt for testing purposes.
+func newCommittedCandidate(
+	t *testing.T,
+	paraID parachaintypes.ParaID, //nolint:unparam
+	headData parachaintypes.HeadData,
+	povHash, relayParent, erasureRoot, pvdHash common.Hash,
+	validationCode parachaintypes.ValidationCode,
+) parachaintypes.CommittedCandidateReceiptV2 {
+	t.Helper()
+
+	var collatorID parachaintypes.CollatorID
+	var collatorSignature parachaintypes.CollatorSignature
+
+	headDataHash, err := headData.Hash()
+	require.NoError(t, err)
+
+	validationCodeHash, err := common.Blake2bHash(validationCode)
+	require.NoError(t, err)
+
+	return parachaintypes.CommittedCandidateReceipt{
+		Descriptor: parachaintypes.CandidateDescriptor{
+			ParaID:                      paraID,
+			RelayParent:                 relayParent,
+			Collator:                    collatorID,
+			PersistedValidationDataHash: pvdHash,
+			PovHash:                     povHash,
+			ErasureRoot:                 erasureRoot,
+			Signature:                   collatorSignature,
+			ParaHead:                    headDataHash,
+			ValidationCodeHash:          parachaintypes.ValidationCodeHash(validationCodeHash),
+		},
+		Commitments: parachaintypes.CandidateCommitments{
+			UpwardMessages:            []parachaintypes.UpwardMessage{},
+			HorizontalMessages:        []parachaintypes.OutboundHrmpMessage{},
+			NewValidationCode:         nil,
+			HeadData:                  headData,
+			ProcessedDownwardMessages: 0,
+			HrmpWatermark:             0,
+		},
+	}.V2()
+}
+
+// parachainValidators returns a list of parachain validator IDs for testing purposes.
+func parachainValidators(t *testing.T, ks keystore.Keystore) []parachaintypes.ValidatorID {
+	t.Helper()
+
+	validatorIds := make([]parachaintypes.ValidatorID, 0, 6)
+
+	keyring, err := keystore.NewSr25519Keyring()
+	require.NoError(t, err)
+
+	keyPairs := []keystore.KeyPair{
+		keyring.Alice(),
+		keyring.Bob(),
+		keyring.Charlie(),
+		keyring.Dave(),
+		keyring.Eve(),
+		keyring.Ferdie(),
+	}
+
+	for _, kp := range keyPairs {
+		var validatorID parachaintypes.ValidatorID
+
+		ks.Insert(kp)
+		bytes := kp.Public().Encode()
+		copy(validatorID[:], bytes)
+		validatorIds = append(validatorIds, validatorID)
+	}
+
+	return validatorIds
+}
+
+func claimQueue(t *testing.T) parachaintypes.ClaimQueue {
+	t.Helper()
+
+	validatorGroups := validatorGroups(t)
+	numOfGroups := len(validatorGroups.Validators)
+
+	queue := parachaintypes.ClaimQueue{}
+	for i := 0; i < numOfGroups; i++ {
+		core := parachaintypes.CoreIndex{Index: uint32(i)}
+
+		queue[core] = []parachaintypes.ParaID{}
+	}
+
+	return queue
+}
+
+// validatorGroups returns validator groups for testing purposes.
+func validatorGroups(t *testing.T) *parachaintypes.ValidatorGroups {
+	t.Helper()
+
+	validatorGroups := parachaintypes.ValidatorGroups{
+		Validators: [][]parachaintypes.ValidatorIndex{
+			{2, 0, 3, 5},
+			{1},
+		},
+		GroupRotationInfo: parachaintypes.GroupRotationInfo{
+			SessionStartBlock:      0,
+			GroupRotationFrequency: 100,
+			Now:                    1,
+		},
+	}
+
+	return &validatorGroups
+}
+
+// signingContext returns a signing context for testing purposes.
+func signingContext(t *testing.T) parachaintypes.SigningContext {
+	t.Helper()
+
+	return parachaintypes.SigningContext{
+		SessionIndex: 1,
+		ParentHash:   getDummyHash(t, 5),
+	}
+}
+
+func bitVector(t *testing.T) parachaintypes.BitVec {
+	t.Helper()
+
+	bv, err := parachaintypes.NewBitVec([]bool{false, true})
+	require.NoError(t, err)
+
+	return bv
+}
+
+// this is a helper function to create an expected action for the ValidateFromExhaustive message
+// that will return a valid result
+func validResponseForValidateFromExhaustive(
+	headData parachaintypes.HeadData,
+	pvd parachaintypes.PersistedValidationData,
+) func(msg any) bool {
+	return func(msg any) bool {
+		msgValidate, ok := msg.(candidatevalidation.ValidateFromExhaustive)
+		if !ok {
+			return false
+		}
+
+		msgValidate.Ch <- parachaintypes.OverseerFuncRes[candidatevalidation.ValidationResult]{
+			Data: candidatevalidation.ValidationResult{
+				Valid: &candidatevalidation.Valid{
+					CandidateCommitments: parachaintypes.CandidateCommitments{
+						HeadData:                  headData,
+						UpwardMessages:            []parachaintypes.UpwardMessage{},
+						HorizontalMessages:        []parachaintypes.OutboundHrmpMessage{},
+						NewValidationCode:         nil,
+						ProcessedDownwardMessages: 0,
+						HrmpWatermark:             0,
+					},
+					PersistedValidationData: pvd,
+				},
+			},
+		}
+		return true
+	}
+}
+
+// this is a expected action for the StoreAvailableData message that will return a nil error
+func storeAvailableData(msg any) bool {
+	store, ok := msg.(availabilitystore.StoreAvailableData)
+	if !ok {
+		return false
+	}
+
+	store.Sender <- nil
+	return true
+}
+
+// this is a expected action for the IntroduceCandidate message that will return a nil error
+func introduceCandidate(msg any) bool {
+	// introduced candidate to prospective parachains
+	introduce, ok := msg.(prospectiveparachains.IntroduceSecondedCandidate)
+	if ok {
+		introduce.Response <- true
+	}
+	return ok
+}
+
+func informToProspectiveParachains(msg any) bool {
+	_, ok := msg.(prospectiveparachains.CandidateBacked)
+	return ok
+}
+
+func informToStatementDistribution(msg any) bool {
+	_, ok := msg.(statementedistributionmessages.Backed)
+	return ok
+}
+
+// we can second a valid candidate when the previous candidate has been found invalid
+func TestSecondsValidCandidate(t *testing.T) {
+	candidateBacking, overseer := initBackingAndOverseerMock(t)
+	defer stopOverseerAndWaitForCompletion(overseer)
+
+	paraValidators := parachainValidators(t, candidateBacking.Keystore)
+	numOfValidators := uint(len(paraValidators))
+	relayParent := getDummyHash(t, 5)
+	paraID := parachaintypes.ParaID(1)
+
+	claimQ := claimQueue(t)
+	claimQ[parachaintypes.CoreIndex{Index: 0}] = []parachaintypes.ParaID{paraID}
+
+	ctrl := gomock.NewController(t)
+	mockBlockState := backing.NewMockBlockState(ctrl)
+	mockRuntime := backing.NewMockInstance(ctrl)
+	mockImplicitView := backing.NewMockImplicitView(ctrl)
+
+	candidateBacking.BlockState = mockBlockState
+	candidateBacking.ImplicitView = mockImplicitView
+
+	// mock BlockState methods
+	mockBlockState.EXPECT().GetRuntime(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(mockRuntime, nil).Times(3)
+
+	// mock Runtime Instance methods
+	mockRuntime.EXPECT().ParachainHostSessionIndexForChild().
+		Return(parachaintypes.SessionIndex(1), nil)
+	mockRuntime.EXPECT().ParachainHostValidators().
+		Return(paraValidators, nil)
+	mockRuntime.EXPECT().ParachainHostValidatorGroups().
+		Return(validatorGroups(t), nil)
+	mockRuntime.EXPECT().ParachainHostMinimumBackingVotes().
+		Return(wazero_runtime.LegacyMinBackingVotes, nil)
+	mockRuntime.EXPECT().
+		ParachainHostSessionExecutorParams(gomock.AssignableToTypeOf(parachaintypes.SessionIndex(1))).
+		Return(&parachaintypes.ExecutorParams{}, nil)
+	mockRuntime.EXPECT().ParachainHostNodeFeatures().
+		Return(bitVector(t), nil)
+	mockRuntime.EXPECT().ParachainHostClaimQueue().
+		Return(claimQ, nil)
+	mockRuntime.EXPECT().ParachainHostDisabledValidators().
+		Return([]parachaintypes.ValidatorIndex{}, nil)
+
+	//mock ImplicitView
+	mockImplicitView.EXPECT().Leaves().Return([]common.Hash{relayParent})
+	mockImplicitView.EXPECT().ActivateLeaf(relayParent).Return(nil)
+	mockImplicitView.EXPECT().KnownAllowedRelayParentsUnder(
+		gomock.AssignableToTypeOf(common.Hash{}),
+		gomock.AssignableToTypeOf(new(parachaintypes.ParaID)),
+	).Return([]common.Hash{relayParent}).Times(2)
+	mockImplicitView.EXPECT().AllAllowedRelayParents().
+		Return([]common.Hash{})
+
+	pov1 := parachaintypes.PoV{BlockData: []byte{42, 43, 44}}
+	pvd1 := dummyPVD(t)
+	validationCode1 := parachaintypes.ValidationCode{1, 2, 3}
+
+	pov1Hash, err := pov1.Hash()
+	require.NoError(t, err)
+
+	pvd1Hash, err := pvd1.Hash()
+	require.NoError(t, err)
+
+	candidate1 := newCommittedCandidate(
+		t,
+		paraID,
+		parachaintypes.HeadData{},
+		pov1Hash,
+		relayParent,
+		makeErasureRoot(t, numOfValidators, pov1, pvd1),
+		pvd1Hash,
+		validationCode1,
+	)
+
+	// to make entry in perRelayParent map
+	overseer.ReceiveMessage(parachaintypes.ActiveLeavesUpdateSignal{
+		Activated: &parachaintypes.ActivatedLeaf{Hash: relayParent, Number: 1},
+	})
+
+	// mocked for invalid second message
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode1, nil)
+
+	validate := func(msg any) bool {
+		validateFromExhaustive, ok := msg.(candidatevalidation.ValidateFromExhaustive)
+		if !ok {
+			return false
+		}
+
+		validateFromExhaustive.Ch <- parachaintypes.OverseerFuncRes[candidatevalidation.ValidationResult]{
+			Data: candidatevalidation.ValidationResult{
+				Invalid: candidatevalidation.BadReturn.Ptr(),
+			},
+		}
+		return true
+	}
+
+	reportInvalid := func(msg any) bool {
+		// reported to collator protocol about invalid candidate
+		_, ok := msg.(collatorprotocolmessages.Invalid)
+		return ok
+	}
+
+	// set expected actions for overseer messages we send from the subsystem.
+	overseer.ExpectActions(validate, reportInvalid)
+
+	// receive second message from overseer to candidate backing subsystem
+	overseer.ReceiveMessage(
+		backing.SecondMessage{
+			RelayParent:             relayParent,
+			CandidateReceipt:        candidate1.ToPlain(),
+			PersistedValidationData: pvd1,
+			PoV:                     pov1,
+		})
+
+	time.Sleep(1 * time.Second)
+
+	pov2 := parachaintypes.PoV{BlockData: []byte{45, 46, 47}}
+
+	pov2Hash, err := pov2.Hash()
+	require.NoError(t, err)
+
+	pvd2 := dummyPVD(t)
+	pvd2.ParentHead.Data = []byte{14, 15, 16}
+	pvd2.MaxPovSize = pvd2.MaxPovSize / 2
+
+	pvd2Hash, err := pvd2.Hash()
+	require.NoError(t, err)
+
+	validationCode2 := parachaintypes.ValidationCode{4, 5, 6}
+
+	candidate2 := newCommittedCandidate(
+		t,
+		paraID,
+		parachaintypes.HeadData{Data: []byte{4, 5, 6}},
+		pov2Hash,
+		relayParent,
+		makeErasureRoot(t, numOfValidators, pov2, pvd2),
+		pvd2Hash,
+		validationCode2,
+	)
+
+	// mocked for valid second message
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode2, nil)
+
+	validate2 := validResponseForValidateFromExhaustive(candidate2.Commitments.HeadData, pvd2)
+
+	distribute := func(msg any) bool {
+		// we have seconded a candidate and shared the statement to peers
+		share, ok := msg.(statementedistributionmessages.Share)
+		if !ok {
+			return false
+		}
+
+		statement, err := share.SignedFullStatementWithPVD.SignedFullStatement.Payload.Value()
+		require.NoError(t, err)
+
+		require.Equal(t, statement, parachaintypes.Seconded(candidate2))
+		require.Equal(t, *share.SignedFullStatementWithPVD.PersistedValidationData, pvd2)
+		require.Equal(t, share.RelayParent, relayParent)
+
+		return true
+	}
+
+	informSeconded := func(msg any) bool {
+		// informed collator protocol that we have seconded the candidate
+		_, ok := msg.(collatorprotocolmessages.Seconded)
+		return ok
+	}
+
+	getHypotheticalMembership := func(msg any) bool {
+		getMembership, ok := msg.(prospectiveparachains.GetHypotheticalMembership)
+		if !ok {
+			return false
+		}
+
+		candidate2Hash, err := parachaintypes.GetCandidateHash(candidate2)
+		require.NoError(t, err)
+
+		getMembership.Response <- []prospectiveparachains.HypotheticalMembershipResponseItem{{
+			HypotheticalCandidate: parachaintypes.HypotheticalCandidateIncomplete{
+				ClaimedCandidateHash: candidate2Hash,
+			},
+			HypotheticalMembership: []common.Hash{relayParent},
+		}}
+		return true
+	}
+
+	// set expected actions for overseer messages we send from the subsystem.
+	overseer.ExpectActions(validate2, storeAvailableData, getHypotheticalMembership,
+		introduceCandidate, distribute, informSeconded)
+
+	// receive second message from overseer to candidate backing subsystem
+	overseer.ReceiveMessage(
+		backing.SecondMessage{
+			RelayParent:             relayParent,
+			CandidateReceipt:        candidate2.ToPlain(),
+			PersistedValidationData: pvd2,
+			PoV:                     pov2,
+		})
+
+	time.Sleep(1 * time.Second)
+}
+
+// candidate reaches quorum.
+// in legacy backing, we need 2 approvals to reach quorum.
+func TestCandidateReachesQuorum(t *testing.T) {
+	candidateBacking, overseer := initBackingAndOverseerMock(t)
+	defer stopOverseerAndWaitForCompletion(overseer)
+
+	paraValidators := parachainValidators(t, candidateBacking.Keystore)
+	numOfValidators := uint(len(paraValidators))
+	relayParent := getDummyHash(t, 5)
+	paraID := parachaintypes.ParaID(1)
+
+	pov := parachaintypes.PoV{BlockData: []byte{1, 2, 3}}
+	povHash, err := pov.Hash()
+	require.NoError(t, err)
+
+	pvd := dummyPVD(t)
+	validationCode := parachaintypes.ValidationCode{1, 2, 3}
+
+	signingContext := signingContext(t)
+
+	claimQ := claimQueue(t)
+	claimQ[parachaintypes.CoreIndex{Index: 0}] = []parachaintypes.ParaID{paraID}
+
+	ctrl := gomock.NewController(t)
+	mockBlockState := backing.NewMockBlockState(ctrl)
+	mockRuntime := backing.NewMockInstance(ctrl)
+	mockImplicitView := backing.NewMockImplicitView(ctrl)
+
+	candidateBacking.BlockState = mockBlockState
+	candidateBacking.ImplicitView = mockImplicitView
+
+	// mock BlockState methods
+	mockBlockState.EXPECT().GetRuntime(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(mockRuntime, nil).Times(2)
+
+	// mock Runtime Instance methods
+	mockRuntime.EXPECT().ParachainHostSessionIndexForChild().
+		Return(parachaintypes.SessionIndex(1), nil)
+	mockRuntime.EXPECT().ParachainHostValidators().
+		Return(paraValidators, nil)
+	mockRuntime.EXPECT().ParachainHostValidatorGroups().
+		Return(validatorGroups(t), nil)
+	mockRuntime.EXPECT().ParachainHostMinimumBackingVotes().
+		Return(wazero_runtime.LegacyMinBackingVotes, nil)
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode, nil)
+	mockRuntime.EXPECT().
+		ParachainHostSessionExecutorParams(gomock.AssignableToTypeOf(parachaintypes.SessionIndex(1))).
+		Return(&parachaintypes.ExecutorParams{}, nil)
+	mockRuntime.EXPECT().ParachainHostNodeFeatures().
+		Return(bitVector(t), nil)
+	mockRuntime.EXPECT().ParachainHostClaimQueue().
+		Return(claimQ, nil)
+	mockRuntime.EXPECT().ParachainHostDisabledValidators().
+		Return([]parachaintypes.ValidatorIndex{}, nil)
+
+	//mock ImplicitView
+	mockImplicitView.EXPECT().ActivateLeaf(relayParent).Return(nil)
+	mockImplicitView.EXPECT().KnownAllowedRelayParentsUnder(
+		gomock.AssignableToTypeOf(common.Hash{}),
+		nil,
+	).Return([]common.Hash{})
+	mockImplicitView.EXPECT().AllAllowedRelayParents().
+		Return([]common.Hash{})
+
+	// to make entry in perRelayParent map
+	overseer.ReceiveMessage(parachaintypes.ActiveLeavesUpdateSignal{
+		Activated: &parachaintypes.ActivatedLeaf{Hash: relayParent, Number: 1},
+	})
+
+	time.Sleep(1 * time.Second)
+
+	headData := parachaintypes.HeadData{Data: []byte{4, 5, 6}}
+
+	candidate := newCommittedCandidate(
+		t,
+		paraID,
+		headData,
+		povHash,
+		relayParent,
+		makeErasureRoot(t, numOfValidators, pov, pvd),
+		common.Hash{},
+		validationCode,
+	)
+
+	candidateHash, err := parachaintypes.GetCandidateHash(candidate)
+	require.NoError(t, err)
+
+	statementSeconded := parachaintypes.NewStatementVDT()
+	err = statementSeconded.SetValue(parachaintypes.Seconded(candidate))
+	require.NoError(t, err)
+
+	val := parachaintypes.Validator{
+		SigningContext: signingContext,
+		Key:            paraValidators[2],
+		Index:          2,
+	}
+
+	signedStatement, err := statementSeconded.Sign(val, candidateBacking.Keystore)
+	require.NoError(t, err)
+
+	signedStatementWithPVD := parachaintypes.SignedFullStatementWithPVD{
+		SignedFullStatement:     *signedStatement,
+		PersistedValidationData: &pvd,
+	}
+
+	fetchPov := func(msg any) bool {
+		fetch, ok := msg.(parachaintypes.AvailabilityDistributionMessageFetchPoV)
+		if !ok {
+			return false
+		}
+
+		fetch.PovCh <- parachaintypes.OverseerFuncRes[parachaintypes.PoV]{Data: pov}
+		return true
+	}
+
+	validate := validResponseForValidateFromExhaustive(headData, pvd)
+
+	distribute := func(msg any) bool {
+		_, ok := msg.(statementedistributionmessages.Share)
+		return ok
+	}
+
+	// set expected actions for overseer messages we send from the subsystem.
+	overseer.ExpectActions(
+		introduceCandidate,
+		fetchPov,
+		validate,
+		storeAvailableData,
+		distribute,
+		informToProspectiveParachains,
+		informToStatementDistribution,
+	)
+
+	// receive statement message from overseer to candidate backing subsystem containing seconded statement
+	overseer.ReceiveMessage(backing.StatementMessage{
+		RelayParent:         relayParent,
+		SignedFullStatement: signedStatementWithPVD,
+	})
+
+	time.Sleep(1 * time.Second)
+
+	getBackable := backing.GetBackableCandidatesMessage{
+		Candidates: map[parachaintypes.ParaID][]*parachaintypes.CandidateHashAndRelayParent{
+			1: {
+				{
+					CandidateHash:        candidateHash,
+					CandidateRelayParent: relayParent,
+				},
+			},
+		},
+		ResCh: make(chan map[parachaintypes.ParaID][]*parachaintypes.BackedCandidate),
+	}
+
+	// receive get backable candidates message from overseer to candidate backing subsystem
+	overseer.ReceiveMessage(getBackable)
+	backableCandidates := <-getBackable.ResCh
+
+	// we need minimum 2 approvals to consider candidate as backable(in legacy backing).
+	// we have received seconded statement, that means we have 1st approval.
+	// as it is a seconded statement, we validate the candidate and if we find it valid, that is the 2nd approval.
+	require.Len(t, backableCandidates, 1)
+
+	backableOfPara1 := backableCandidates[1]
+	require.Len(t, backableOfPara1[0].ValidityVotes, 2)
+
+	time.Sleep(1 * time.Second)
+
+	statementValid := parachaintypes.NewStatementVDT()
+	err = statementValid.SetValue(parachaintypes.Valid(candidateHash))
+	require.NoError(t, err)
+
+	val = parachaintypes.Validator{
+		SigningContext: signingContext,
+		Key:            paraValidators[5],
+		Index:          5,
+	}
+
+	signedStatement, err = statementValid.Sign(val, candidateBacking.Keystore)
+	require.NoError(t, err)
+
+	signedStatementValid := parachaintypes.SignedFullStatementWithPVD{
+		SignedFullStatement: *signedStatement,
+	}
+
+	// receive statement message from overseer to candidate backing subsystem containing valid statement
+	overseer.ReceiveMessage(backing.StatementMessage{
+		RelayParent:         relayParent,
+		SignedFullStatement: signedStatementValid,
+	})
+
+	time.Sleep(1 * time.Second)
+
+	getBackable = backing.GetBackableCandidatesMessage{
+		Candidates: map[parachaintypes.ParaID][]*parachaintypes.CandidateHashAndRelayParent{
+			1: {
+				{
+					CandidateHash:        candidateHash,
+					CandidateRelayParent: relayParent,
+				},
+			},
+		},
+		ResCh: make(chan map[parachaintypes.ParaID][]*parachaintypes.BackedCandidate),
+	}
+
+	overseer.ReceiveMessage(getBackable)
+	backableCandidates = <-getBackable.ResCh
+
+	// we already have 2 approvals,
+	// and we have received valid statement, that is the 3rd approval.
+	// as it is a valid statement, we do not validate the candidate, just store into the statement table.
+	require.Len(t, backableCandidates, 1)
+
+	backableOfPara1 = backableCandidates[1]
+	require.Len(t, backableOfPara1[0].ValidityVotes, 3)
+}
+
+// if the validation of the candidate has failed this does not stop the work of this subsystem
+// and so it is not fatal to the node.
+func TestValidationFailDoesNotStopSubsystem(t *testing.T) {
+	candidateBacking, overseer := initBackingAndOverseerMock(t)
+	defer stopOverseerAndWaitForCompletion(overseer)
+
+	paraValidators := parachainValidators(t, candidateBacking.Keystore)
+	numOfValidators := uint(len(paraValidators))
+	relayParent := getDummyHash(t, 5)
+	paraID := parachaintypes.ParaID(1)
+
+	pov := parachaintypes.PoV{BlockData: []byte{1, 2, 3}}
+	povHash, err := pov.Hash()
+	require.NoError(t, err)
+
+	pvd := dummyPVD(t)
+	validationCode := parachaintypes.ValidationCode{1, 2, 3}
+
+	signingContext := signingContext(t)
+
+	claimQ := claimQueue(t)
+	claimQ[parachaintypes.CoreIndex{Index: 0}] = []parachaintypes.ParaID{paraID}
+
+	ctrl := gomock.NewController(t)
+	mockBlockState := backing.NewMockBlockState(ctrl)
+	mockRuntime := backing.NewMockInstance(ctrl)
+	mockImplicitView := backing.NewMockImplicitView(ctrl)
+
+	candidateBacking.BlockState = mockBlockState
+	candidateBacking.ImplicitView = mockImplicitView
+
+	// mock BlockState methods
+	mockBlockState.EXPECT().GetRuntime(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(mockRuntime, nil).Times(2)
+
+	// mock Runtime Instance methods
+	mockRuntime.EXPECT().ParachainHostSessionIndexForChild().
+		Return(parachaintypes.SessionIndex(1), nil)
+	mockRuntime.EXPECT().ParachainHostValidators().
+		Return(paraValidators, nil)
+	mockRuntime.EXPECT().ParachainHostValidatorGroups().
+		Return(validatorGroups(t), nil)
+	mockRuntime.EXPECT().ParachainHostMinimumBackingVotes().
+		Return(wazero_runtime.LegacyMinBackingVotes, nil)
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode, nil)
+	mockRuntime.EXPECT().
+		ParachainHostSessionExecutorParams(gomock.AssignableToTypeOf(parachaintypes.SessionIndex(1))).
+		Return(&parachaintypes.ExecutorParams{}, nil)
+	mockRuntime.EXPECT().ParachainHostNodeFeatures().
+		Return(bitVector(t), nil)
+	mockRuntime.EXPECT().ParachainHostClaimQueue().
+		Return(claimQ, nil)
+	mockRuntime.EXPECT().ParachainHostDisabledValidators().
+		Return([]parachaintypes.ValidatorIndex{}, nil)
+
+	//mock ImplicitView
+	mockImplicitView.EXPECT().ActivateLeaf(relayParent).Return(nil)
+	mockImplicitView.EXPECT().KnownAllowedRelayParentsUnder(
+		gomock.AssignableToTypeOf(common.Hash{}),
+		nil,
+	).Return([]common.Hash{})
+	mockImplicitView.EXPECT().AllAllowedRelayParents().
+		Return([]common.Hash{})
+
+	// to make entry in perRelayParent map
+	overseer.ReceiveMessage(parachaintypes.ActiveLeavesUpdateSignal{
+		Activated: &parachaintypes.ActivatedLeaf{Hash: relayParent, Number: 1},
+	})
+
+	time.Sleep(1 * time.Second)
+
+	headData := parachaintypes.HeadData{Data: []byte{4, 5, 6}}
+
+	candidate := newCommittedCandidate(
+		t,
+		paraID,
+		headData,
+		povHash,
+		relayParent,
+		makeErasureRoot(t, numOfValidators, pov, pvd),
+		common.Hash{},
+		validationCode,
+	)
+
+	statementSeconded := parachaintypes.NewStatementVDT()
+	err = statementSeconded.SetValue(parachaintypes.Seconded(candidate))
+	require.NoError(t, err)
+
+	val := parachaintypes.Validator{
+		SigningContext: signingContext,
+		Key:            paraValidators[2],
+		Index:          2,
+	}
+
+	signedStatement, err := statementSeconded.Sign(val, candidateBacking.Keystore)
+	require.NoError(t, err)
+
+	statementWithPVD := parachaintypes.SignedFullStatementWithPVD{
+		SignedFullStatement:     *signedStatement,
+		PersistedValidationData: &pvd,
+	}
+
+	fetchPov := func(msg any) bool {
+		fetch, ok := msg.(parachaintypes.AvailabilityDistributionMessageFetchPoV)
+		if !ok {
+			return false
+		}
+
+		fetch.PovCh <- parachaintypes.OverseerFuncRes[parachaintypes.PoV]{Data: pov}
+		return true
+	}
+
+	validate := func(msg any) bool {
+		msgValidate, ok := msg.(candidatevalidation.ValidateFromExhaustive)
+		if !ok {
+			return false
+		}
+
+		msgValidate.Ch <- parachaintypes.OverseerFuncRes[candidatevalidation.ValidationResult]{
+			Err: errors.New("some internal error"),
+		}
+		return true
+	}
+
+	overseer.ExpectActions(introduceCandidate, fetchPov, validate)
+
+	// receive statement message from overseer to candidate backing subsystem containing seconded statement
+	overseer.ReceiveMessage(backing.StatementMessage{
+		RelayParent:         relayParent,
+		SignedFullStatement: statementWithPVD,
+	})
+
+	time.Sleep(1 * time.Second)
+
+	candidateHash, err := parachaintypes.GetCandidateHash(candidate)
+	require.NoError(t, err)
+
+	getBackable := backing.GetBackableCandidatesMessage{
+		Candidates: map[parachaintypes.ParaID][]*parachaintypes.CandidateHashAndRelayParent{
+			1: {
+				{
+					CandidateHash:        candidateHash,
+					CandidateRelayParent: relayParent,
+				},
+			},
+		},
+		ResCh: make(chan map[parachaintypes.ParaID][]*parachaintypes.BackedCandidate),
+	}
+
+	// to make sure the candidate backing subsystem has not stopped working,
+	// we receive get backable candidates message from overseer to candidate backing subsystem
+	overseer.ReceiveMessage(getBackable)
+	backableCandidates := <-getBackable.ResCh
+
+	require.Len(t, backableCandidates, 0)
+}
+
+// TODO: modify this test to ensure that a validator can second multiple candidates per relay parent,
+// as we remove all the code for prospective parachain mode disabled.
+//
+// It's impossible to second multiple candidates per relay parent without prospective parachains.
+func TestCanNotSecondMultipleCandidatesPerRelayParent(t *testing.T) {
+	t.Skip("This test is not valid anymore as we want to remove all the code for prospective parachain mode disabled")
+
+	candidateBacking, overseer := initBackingAndOverseerMock(t)
+	defer stopOverseerAndWaitForCompletion(overseer)
+
+	paraValidators := parachainValidators(t, candidateBacking.Keystore)
+	numOfValidators := uint(len(paraValidators))
+	relayParent := getDummyHash(t, 5)
+	paraID := parachaintypes.ParaID(1)
+
+	claimQ := claimQueue(t)
+	claimQ[parachaintypes.CoreIndex{Index: 0}] = []parachaintypes.ParaID{paraID}
+
+	ctrl := gomock.NewController(t)
+	mockBlockState := backing.NewMockBlockState(ctrl)
+	mockRuntime := backing.NewMockInstance(ctrl)
+	mockImplicitView := backing.NewMockImplicitView(ctrl)
+
+	candidateBacking.BlockState = mockBlockState
+	candidateBacking.ImplicitView = mockImplicitView
+
+	// mock BlockState methods
+	mockBlockState.EXPECT().GetRuntime(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(mockRuntime, nil).Times(4)
+
+	// mock Runtime Instance methods
+	mockRuntime.EXPECT().ParachainHostAsyncBackingParams().
+		Return(nil, wazero_runtime.ErrExportFunctionNotFound)
+	mockRuntime.EXPECT().ParachainHostSessionIndexForChild().
+		Return(parachaintypes.SessionIndex(1), nil).Times(3)
+	mockRuntime.EXPECT().ParachainHostValidators().
+		Return(paraValidators, nil)
+	mockRuntime.EXPECT().ParachainHostValidatorGroups().
+		Return(validatorGroups(t), nil)
+	mockRuntime.EXPECT().ParachainHostMinimumBackingVotes().
+		Return(wazero_runtime.LegacyMinBackingVotes, nil)
+	mockRuntime.EXPECT().
+		ParachainHostSessionExecutorParams(gomock.AssignableToTypeOf(parachaintypes.SessionIndex(1))).
+		Return(&parachaintypes.ExecutorParams{}, nil).Times(3)
+	mockRuntime.EXPECT().ParachainHostNodeFeatures().
+		Return(bitVector(t), nil)
+	mockRuntime.EXPECT().ParachainHostClaimQueue().
+		Return(claimQ, nil)
+	mockRuntime.EXPECT().ParachainHostDisabledValidators().
+		Return([]parachaintypes.ValidatorIndex{}, nil)
+
+	//mock ImplicitView
+	mockImplicitView.EXPECT().ActivateLeaf(relayParent).Return(nil)
+	mockImplicitView.EXPECT().KnownAllowedRelayParentsUnder(
+		gomock.AssignableToTypeOf(common.Hash{}),
+		nil,
+	).Return([]common.Hash{})
+	mockImplicitView.EXPECT().AllAllowedRelayParents().
+		Return([]common.Hash{})
+
+	// to make entry in perRelayParent map
+	overseer.ReceiveMessage(parachaintypes.ActiveLeavesUpdateSignal{
+		Activated: &parachaintypes.ActivatedLeaf{Hash: relayParent, Number: 1},
+	})
+
+	time.Sleep(1 * time.Second)
+
+	headData := parachaintypes.HeadData{Data: []byte{4, 5, 6}}
+
+	pov := parachaintypes.PoV{BlockData: []byte{1, 2, 3}}
+	povHash, err := pov.Hash()
+	require.NoError(t, err)
+
+	pvd := dummyPVD(t)
+	pvdHash, err := pvd.Hash()
+	require.NoError(t, err)
+
+	validationCode1 := parachaintypes.ValidationCode{1, 2, 3}
+
+	candidate1 := newCommittedCandidate(t,
+		paraID,
+		headData,
+		povHash,
+		relayParent,
+		makeErasureRoot(t, numOfValidators, pov, pvd),
+		pvdHash,
+		validationCode1,
+	)
+
+	validate := validResponseForValidateFromExhaustive(headData, pvd)
+
+	distribute := func(msg any) bool {
+		// we have seconded a candidate and shared the statement to peers
+		share, ok := msg.(statementedistributionmessages.Share)
+		if !ok {
+			return false
+		}
+
+		statement, err := share.SignedFullStatementWithPVD.SignedFullStatement.Payload.Value()
+		require.NoError(t, err)
+
+		require.Equal(t, statement, parachaintypes.Seconded(candidate1))
+		require.Equal(t, *share.SignedFullStatementWithPVD.PersistedValidationData, pvd)
+		require.Equal(t, share.RelayParent, relayParent)
+
+		return true
+	}
+
+	informSeconded := func(msg any) bool {
+		// informed collator protocol that we have seconded the candidate
+		_, ok := msg.(collatorprotocolmessages.Seconded)
+		return ok
+	}
+
+	overseer.ExpectActions(validate, storeAvailableData, introduceCandidate, distribute, informSeconded)
+
+	// mocked for candidate1
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode1, nil)
+
+	overseer.ReceiveMessage(backing.SecondMessage{
+		RelayParent:             relayParent,
+		CandidateReceipt:        candidate1.ToPlain(),
+		PersistedValidationData: pvd,
+		PoV:                     pov,
+	})
+
+	time.Sleep(1 * time.Second)
+
+	validationCode2 := parachaintypes.ValidationCode{4, 5, 6}
+
+	candidate2 := newCommittedCandidate(t,
+		paraID,
+		headData,
+		povHash,
+		relayParent,
+		makeErasureRoot(t, numOfValidators, pov, pvd),
+		pvdHash,
+		validationCode2,
+	)
+
+	// Validate the candidate, but the candidate is rejected because the leaf is already occupied.
+	// should not expect `StatementDistributionMessageShare` and `collator protocol messages.Seconded` overseer messages.
+	overseer.ExpectActions(validate, storeAvailableData)
+
+	// mocked for candidate2
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode2, nil)
+
+	// Try to second candidate with the same relay parent again.
+	overseer.ReceiveMessage(backing.SecondMessage{
+		RelayParent:             relayParent,
+		CandidateReceipt:        candidate2.ToPlain(),
+		PersistedValidationData: pvd,
+		PoV:                     pov,
+	})
+
+	time.Sleep(10 * time.Minute)
+}
+
+// The new leaf view doesn't clobber the old view when we update active leaves.
+func TestNewLeafDoesNotClobberOld(t *testing.T) {
+	candidateBacking, overseer := initBackingAndOverseerMock(t)
+	defer stopOverseerAndWaitForCompletion(overseer)
+
+	paraValidators := parachainValidators(t, candidateBacking.Keystore)
+	numOfValidators := uint(len(paraValidators))
+	relayParent1 := getDummyHash(t, 5)
+	relayParent2 := getDummyHash(t, 6)
+	paraID := parachaintypes.ParaID(1)
+	validationCode := parachaintypes.ValidationCode{1, 2, 3}
+
+	claimQ := claimQueue(t)
+	claimQ[parachaintypes.CoreIndex{Index: 0}] = []parachaintypes.ParaID{paraID}
+
+	ctrl := gomock.NewController(t)
+	mockBlockState := backing.NewMockBlockState(ctrl)
+	mockRuntime := backing.NewMockInstance(ctrl)
+	mockImplicitView := backing.NewMockImplicitView(ctrl)
+
+	candidateBacking.BlockState = mockBlockState
+	candidateBacking.ImplicitView = mockImplicitView
+
+	// mock BlockState methods
+	mockBlockState.EXPECT().GetRuntime(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(mockRuntime, nil).Times(3)
+
+	// mock Runtime Instance methods
+	mockRuntime.EXPECT().ParachainHostSessionIndexForChild().
+		Return(parachaintypes.SessionIndex(1), nil).Times(2)
+	mockRuntime.EXPECT().ParachainHostValidators().
+		Return(paraValidators, nil)
+	mockRuntime.EXPECT().ParachainHostValidatorGroups().
+		Return(validatorGroups(t), nil).Times(2)
+	mockRuntime.EXPECT().ParachainHostMinimumBackingVotes().
+		Return(wazero_runtime.LegacyMinBackingVotes, nil)
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode, nil)
+	mockRuntime.EXPECT().
+		ParachainHostSessionExecutorParams(gomock.AssignableToTypeOf(parachaintypes.SessionIndex(1))).
+		Return(&parachaintypes.ExecutorParams{}, nil)
+	mockRuntime.EXPECT().ParachainHostNodeFeatures().
+		Return(bitVector(t), nil)
+	mockRuntime.EXPECT().ParachainHostClaimQueue().
+		Return(claimQ, nil).Times(2)
+	mockRuntime.EXPECT().ParachainHostDisabledValidators().
+		Return([]parachaintypes.ValidatorIndex{}, nil).Times(2)
+
+	//mock ImplicitView
+	mockImplicitView.EXPECT().Leaves().Return([]common.Hash{relayParent1})
+	mockImplicitView.EXPECT().ActivateLeaf(gomock.AssignableToTypeOf(common.Hash{})).Return(nil).Times(2)
+	mockImplicitView.EXPECT().KnownAllowedRelayParentsUnder(
+		relayParent1,
+		gomock.AssignableToTypeOf(new(parachaintypes.ParaID)),
+	).Return([]common.Hash{relayParent1}).Times(2)
+	mockImplicitView.EXPECT().KnownAllowedRelayParentsUnder(
+		gomock.AssignableToTypeOf(common.Hash{}),
+		gomock.AssignableToTypeOf(new(parachaintypes.ParaID)),
+	).Return([]common.Hash{relayParent2})
+	mockImplicitView.EXPECT().AllAllowedRelayParents().
+		Return([]common.Hash{})
+
+	// add relay parent 1 to active leaves
+	overseer.ReceiveMessage(parachaintypes.ActiveLeavesUpdateSignal{
+		Activated: &parachaintypes.ActivatedLeaf{Hash: relayParent1, Number: 1},
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	mockImplicitView.EXPECT().AllAllowedRelayParents().
+		Return([]common.Hash{relayParent1})
+
+	// add relay parent 2 to active leaves that does not clobber relay parent 1
+	// and still allows seconding of candidates for relay parent 1
+	overseer.ReceiveMessage(parachaintypes.ActiveLeavesUpdateSignal{
+		Activated: &parachaintypes.ActivatedLeaf{Hash: relayParent2, Number: 1},
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	headData := parachaintypes.HeadData{Data: []byte{4, 5, 6}}
+
+	pov := parachaintypes.PoV{BlockData: []byte{1, 2, 3}}
+	povHash, err := pov.Hash()
+	require.NoError(t, err)
+
+	pvd := dummyPVD(t)
+	pvdHash, err := pvd.Hash()
+	require.NoError(t, err)
+
+	// candidate with relay parent 1
+	candidate := newCommittedCandidate(t,
+		paraID,
+		headData,
+		povHash,
+		relayParent1,
+		makeErasureRoot(t, numOfValidators, pov, pvd),
+		pvdHash,
+		validationCode,
+	)
+
+	validate := validResponseForValidateFromExhaustive(headData, pvd)
+
+	distribute := func(msg any) bool {
+		// we have seconded a candidate and shared the statement to peers
+		share, ok := msg.(statementedistributionmessages.Share)
+		if !ok {
+			return false
+		}
+
+		statement, err := share.SignedFullStatementWithPVD.SignedFullStatement.Payload.Value()
+		require.NoError(t, err)
+
+		require.Equal(t, statement, parachaintypes.Seconded(candidate))
+		require.Equal(t, *share.SignedFullStatementWithPVD.PersistedValidationData, pvd)
+		require.Equal(t, share.RelayParent, relayParent1)
+
+		return true
+	}
+
+	informSeconded := func(msg any) bool {
+		// informed collator protocol that we have seconded the candidate
+		_, ok := msg.(collatorprotocolmessages.Seconded)
+		return ok
+	}
+
+	getHypotheticalMembership := func(msg any) bool {
+		getMembership, ok := msg.(prospectiveparachains.GetHypotheticalMembership)
+		if !ok {
+			return false
+		}
+
+		candidateHash, err := parachaintypes.GetCandidateHash(candidate)
+		require.NoError(t, err)
+
+		getMembership.Response <- []prospectiveparachains.HypotheticalMembershipResponseItem{{
+			HypotheticalCandidate: parachaintypes.HypotheticalCandidateIncomplete{
+				ClaimedCandidateHash: candidateHash,
+			},
+			HypotheticalMembership: []common.Hash{relayParent1},
+		}}
+		return true
+	}
+
+	// If the old leaf view is clobbered, the candidate will be ignored and in that case,
+	// overseer does not expect `StatementDistributionMessageShare` and `collatorprotocolmessages.Seconded`
+	// overseer messages. So, test will fail.
+	//
+	// But, when the old leaf view is not clobbered, the candidate will be seconded.
+	// so, oversee expects all four overseer messages.
+	overseer.ExpectActions(validate, storeAvailableData, getHypotheticalMembership,
+		introduceCandidate, distribute, informSeconded)
+
+	overseer.ReceiveMessage(backing.SecondMessage{
+		RelayParent:             relayParent1,
+		CandidateReceipt:        candidate.ToPlain(),
+		PersistedValidationData: pvd,
+		PoV:                     pov,
+	})
+
+	time.Sleep(1 * time.Second)
+}
+
+// Issuing conflicting statements on the same candidate should be a misbehaviour.
+func TestConflictingStatementIsMisbehavior(t *testing.T) {
+	candidateBacking, overseer := initBackingAndOverseerMock(t)
+	defer stopOverseerAndWaitForCompletion(overseer)
+
+	paraValidators := parachainValidators(t, candidateBacking.Keystore)
+	numOfValidators := uint(len(paraValidators))
+	relayParent := getDummyHash(t, 5)
+	paraID := parachaintypes.ParaID(1)
+
+	pov := parachaintypes.PoV{BlockData: []byte{1, 2, 3}}
+	povHash, err := pov.Hash()
+	require.NoError(t, err)
+
+	pvd := dummyPVD(t)
+	validationCode := parachaintypes.ValidationCode{1, 2, 3}
+
+	signingContext := signingContext(t)
+
+	claimQ := claimQueue(t)
+	claimQ[parachaintypes.CoreIndex{Index: 0}] = []parachaintypes.ParaID{paraID}
+
+	ctrl := gomock.NewController(t)
+	mockBlockState := backing.NewMockBlockState(ctrl)
+	mockRuntime := backing.NewMockInstance(ctrl)
+	mockImplicitView := backing.NewMockImplicitView(ctrl)
+
+	candidateBacking.BlockState = mockBlockState
+	candidateBacking.ImplicitView = mockImplicitView
+
+	// mock BlockState methods
+	mockBlockState.EXPECT().GetRuntime(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(mockRuntime, nil).Times(2)
+
+	// mock Runtime Instance methods
+	mockRuntime.EXPECT().ParachainHostSessionIndexForChild().
+		Return(parachaintypes.SessionIndex(1), nil)
+	mockRuntime.EXPECT().ParachainHostValidators().
+		Return(paraValidators, nil)
+	mockRuntime.EXPECT().ParachainHostValidatorGroups().
+		Return(validatorGroups(t), nil)
+	mockRuntime.EXPECT().ParachainHostMinimumBackingVotes().
+		Return(wazero_runtime.LegacyMinBackingVotes, nil)
+	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
+		Return(&validationCode, nil)
+	mockRuntime.EXPECT().
+		ParachainHostSessionExecutorParams(gomock.AssignableToTypeOf(parachaintypes.SessionIndex(1))).
+		Return(&parachaintypes.ExecutorParams{}, nil)
+	mockRuntime.EXPECT().ParachainHostNodeFeatures().
+		Return(bitVector(t), nil)
+	mockRuntime.EXPECT().ParachainHostClaimQueue().
+		Return(claimQ, nil)
+	mockRuntime.EXPECT().ParachainHostDisabledValidators().
+		Return([]parachaintypes.ValidatorIndex{}, nil)
+
+	//mock ImplicitView
+	mockImplicitView.EXPECT().ActivateLeaf(gomock.AssignableToTypeOf(common.Hash{})).Return(nil)
+	mockImplicitView.EXPECT().KnownAllowedRelayParentsUnder(
+		gomock.AssignableToTypeOf(common.Hash{}),
+		nil,
+	).Return([]common.Hash{})
+	mockImplicitView.EXPECT().AllAllowedRelayParents().
+		Return([]common.Hash{})
+
+	// to make entry in perRelayParent map
+	overseer.ReceiveMessage(parachaintypes.ActiveLeavesUpdateSignal{
+		Activated: &parachaintypes.ActivatedLeaf{Hash: relayParent, Number: 1},
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	headData := parachaintypes.HeadData{Data: []byte{4, 5, 6}}
+
+	candidate := newCommittedCandidate(
+		t,
+		paraID,
+		headData,
+		povHash,
+		relayParent,
+		makeErasureRoot(t, numOfValidators, pov, pvd),
+		common.Hash{},
+		validationCode,
+	)
+
+	statementSeconded := parachaintypes.NewStatementVDT()
+	err = statementSeconded.SetValue(parachaintypes.Seconded(candidate))
+	require.NoError(t, err)
+
+	val := parachaintypes.Validator{
+		SigningContext: signingContext,
+		Key:            paraValidators[2],
+		Index:          2,
+	}
+
+	signedStatement, err := statementSeconded.Sign(val, candidateBacking.Keystore)
+	require.NoError(t, err)
+
+	signedStatementSeconded := parachaintypes.SignedFullStatementWithPVD{
+		SignedFullStatement:     *signedStatement,
+		PersistedValidationData: &pvd,
+	}
+
+	fetchPov := func(msg any) bool {
+		fetch, ok := msg.(parachaintypes.AvailabilityDistributionMessageFetchPoV)
+		if !ok {
+			return false
+		}
+
+		fetch.PovCh <- parachaintypes.OverseerFuncRes[parachaintypes.PoV]{Data: pov}
+		return true
+	}
+
+	validate := validResponseForValidateFromExhaustive(headData, pvd)
+
+	distribute := func(msg any) bool {
+		_, ok := msg.(statementedistributionmessages.Share)
+		return ok
+	}
+
+	// set expected actions for overseer messages we send from the subsystem.
+	overseer.ExpectActions(introduceCandidate, fetchPov, validate, storeAvailableData, distribute,
+		informToProspectiveParachains, informToStatementDistribution)
+
+	// receive statement message from overseer to candidate backing subsystem containing `Seconded` statement
+	overseer.ReceiveMessage(backing.StatementMessage{
+		RelayParent:         relayParent,
+		SignedFullStatement: signedStatementSeconded,
+	})
+	time.Sleep(1 * time.Second)
+
+	candidateHash, err := parachaintypes.GetCandidateHash(candidate)
+	require.NoError(t, err)
+
+	statementValid := parachaintypes.NewStatementVDT()
+	err = statementValid.SetValue(parachaintypes.Valid(candidateHash))
+	require.NoError(t, err)
+
+	signedStatement, err = statementValid.Sign(val, candidateBacking.Keystore)
+	require.NoError(t, err)
+
+	statementWithPVD := parachaintypes.SignedFullStatementWithPVD{
+		SignedFullStatement: *signedStatement,
+	}
+
+	reportMisbehavior := func(msg any) bool {
+		provisionerMessage, ok := msg.(provisionermessages.ProvisionableData)
+		if !ok {
+			return false
+		}
+
+		require.Equal(t, relayParent, provisionerMessage.RelayParent)
+		misbehaviorReport, ok := provisionerMessage.Data.(provisionermessages.ProvisionableDataMisbehaviorReport)
+		require.True(t, ok)
+
+		require.Equal(t, parachaintypes.ValidatorIndex(2), misbehaviorReport.ValidatorIndex)
+		doubleVote, ok := misbehaviorReport.Misbehaviour.(parachaintypes.ValidityDoubleVoteIssuedAndValidity)
+		require.True(t, ok)
+
+		signForSeconded := doubleVote.CommittedCandidateReceiptAndSign.Signature
+		statementSeconded := parachaintypes.NewStatementVDT()
+		err := statementSeconded.SetValue(
+			parachaintypes.Seconded(doubleVote.CommittedCandidateReceiptAndSign.CommittedCandidateReceipt))
+		require.NoError(t, err)
+
+		validator := parachaintypes.Validator{
+			SigningContext: signingContext,
+			Key:            paraValidators[2],
+			Index:          2,
+		}
+
+		ok, err = statementSeconded.VerifySignature(validator, signForSeconded)
+		require.NoError(t, err)
+		require.True(t, ok)
+
+		signForValid := doubleVote.CandidateHashAndSign.Signature
+		statementValid := parachaintypes.NewStatementVDT()
+		err = statementValid.SetValue(parachaintypes.Valid(doubleVote.CandidateHashAndSign.CandidateHash))
+		require.NoError(t, err)
+
+		ok, err = statementValid.VerifySignature(validator, signForValid)
+		require.NoError(t, err)
+		require.True(t, ok)
+
+		return true
+	}
+
+	overseer.ExpectActions(reportMisbehavior)
+
+	// receive statement message from overseer to candidate backing subsystem containing `Valid` statement.
+	// this candidate is already seconded by the same validator So, it is a misbehaviour for conflicting statements.
+	overseer.ReceiveMessage(backing.StatementMessage{
+		RelayParent:         relayParent,
+		SignedFullStatement: statementWithPVD,
+	})
+	time.Sleep(1 * time.Second)
+}

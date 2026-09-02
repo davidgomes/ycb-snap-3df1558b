@@ -1,0 +1,31 @@
+coverage:
+  range: "60...80"
+  status:
+    patch: off
+    project:
+      default:
+        target: 50%
+        # Only require global coverage to be 50%
+        # to allow room for refactors
+
+comment:
+  layout: diff
+  behavior: once
+  require_changes: true
+
+ignore:
+  - "docs/**/*"
+  - "tests/**/*"
+  - "scripts/**/*"
+  - "cmd/gossamer/test_inputs/*"
+  - "chain/**/*"
+  - "dot/config/**/*"
+  - "dot/rpc/modules/test_data"
+  - "lib/runtime/test_data"
+  - "**/errors.go"
+  - "**/*/errors.go"
+  - "**/*/mocks/*.go"
+  - "**/*/mock_*.go"
+  - "**/*/mocks_*.go"
+  - "go.mod"
+  - "go.sum"
