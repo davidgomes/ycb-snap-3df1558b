@@ -1,0 +1,73 @@
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["W", "E", "F", "I"]
+ignore = [
+]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.format]
+preview = true # needed for quote-style
+quote-style = "preserve"
+
+[tool.towncrier]
+    package = "podman_compose"
+    package_dir = "master"
+    directory = "newsfragments"
+    filename = "docs/Changelog-new.md"
+    template = "scripts/Changelog-template.jinja"
+    title_format = "Version {version} ({project_date})"
+    [[tool.towncrier.section]]
+        path = ""
+
+    [[tool.towncrier.type]]
+        directory = "feature"
+        name = "Features"
+        showcontent = true
+
+    [[tool.towncrier.type]]
+        directory = "change"
+        name = "Changes"
+        showcontent = true
+
+    [[tool.towncrier.type]]
+        directory = "bugfix"
+        name = "Bug fixes"
+        showcontent = true
+
+    [[tool.towncrier.type]]
+        directory = "doc"
+        name = "Improved Documentation"
+        showcontent = true
+
+    [[tool.towncrier.type]]
+        directory = "removal"
+        name = "Deprecations and Removals"
+        showcontent = true
+
+    [[tool.towncrier.type]]
+        directory = "misc"
+        name = "Misc"
+        showcontent = true
+
+[tool.mypy]
+python_version = "3.9"
+namespace_packages = true
+explicit_package_bases = true
+pretty = true
+warn_redundant_casts = true
+disallow_untyped_calls = false
+disallow_untyped_defs = true
+no_implicit_optional = true
+mypy_path = "$MYPY_CONFIG_FILE_DIR"
+exclude = "build"
+
+[[tool.mypy.overrides]]
+module = [
+    "parameterized.*",
+]
+ignore_missing_imports = true
