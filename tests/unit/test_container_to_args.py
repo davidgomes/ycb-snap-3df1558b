@@ -531,10 +531,24 @@ class TestContainerToArgs(unittest.IsolatedAsyncioTestCase):
         )
 
     @parameterized.expand([
-        (False, "z", ["--mount", "type=bind,source=./foo,destination=/mnt,z"]),
-        (False, "Z", ["--mount", "type=bind,source=./foo,destination=/mnt,Z"]),
-        (True, "z", ["-v", "./foo:/mnt:z"]),
-        (True, "Z", ["-v", "./foo:/mnt:Z"]),
+        (
+            False,
+            "z",
+            [
+                "--mount",
+                f"type=bind,source={get_test_file_path('test_dirname/foo')},destination=/mnt,z",
+            ],
+        ),
+        (
+            False,
+            "Z",
+            [
+                "--mount",
+                f"type=bind,source={get_test_file_path('test_dirname/foo')},destination=/mnt,Z",
+            ],
+        ),
+        (True, "z", ["-v", f"{get_test_file_path('test_dirname/foo')}:/mnt:z"]),
+        (True, "Z", ["-v", f"{get_test_file_path('test_dirname/foo')}:/mnt:Z"]),
     ])
     async def test_selinux_volume(
         self, prefer_volume: bool, selinux_type: str, expected_additional_args: list
@@ -556,6 +570,44 @@ class TestContainerToArgs(unittest.IsolatedAsyncioTestCase):
                 "bind": {
                     "selinux": selinux_type,
                 },
+            }
+        ]
+
+        args = await container_to_args(c, cnt)
+        self.assertEqual(
+            args,
+            [
+                "--name=project_name_service_name1",
+                "-d",
+                *expected_additional_args,
+                "--network=bridge:alias=service_name",
+                "busybox",
+            ],
+        )
+
+    @parameterized.expand([
+        (
+            False,
+            [
+                "--mount",
+                f"type=bind,source={get_test_file_path('test_dirname/bar')},destination=/mnt",
+            ],
+        ),
+        (True, ["-v", f"{get_test_file_path('test_dirname/bar')}:/mnt"]),
+    ])
+    async def test_bind_volume_relative_source(
+        self, prefer_volume: bool, expected_additional_args: list
+    ) -> None:
+        c = create_compose_mock()
+        c.prefer_volume_over_mount = prefer_volume
+
+        cnt = get_minimal_container()
+        cnt["_service"] = cnt["service_name"]
+        cnt["volumes"] = [
+            {
+                "type": "bind",
+                "source": "../test_dirname/bar",
+                "target": "/mnt",
             }
         ]
 
