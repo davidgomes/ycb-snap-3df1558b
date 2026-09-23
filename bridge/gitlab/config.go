@@ -25,6 +25,7 @@ import (
 
 var (
 	ErrBadProjectURL = errors.New("bad project url")
+	ErrBadBaseURL    = errors.New("bad base url")
 )
 
 func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (core.Configuration, error) {
@@ -42,6 +43,11 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 		return nil, fmt.Errorf("you must provide a project URL to configure this bridge with a token")
 	}
 
+	baseUrl := params.BaseURL
+	if baseUrl == "" {
+		baseUrl = defaultBaseURL
+	}
+
 	var url string
 
 	// get project url
@@ -50,7 +56,7 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 		url = params.URL
 	default:
 		// terminal prompt
-		url, err = promptURL(repo)
+		url, err = promptURL(repo, baseUrl)
 		if err != nil {
 			return nil, errors.Wrap(err, "url prompt")
 		}
@@ -87,13 +93,14 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 	}
 
 	// validate project url and get its ID
-	id, err := validateProjectURL(url, token)
+	id, err := validateProjectURL(baseUrl, url, token)
 	if err != nil {
 		return nil, errors.Wrap(err, "project validation")
 	}
 
 	conf[core.ConfigKeyTarget] = target
 	conf[keyProjectID] = strconv.Itoa(id)
+	conf[keyGitlabBaseUrl] = baseUrl
 
 	err = g.ValidateConfig(conf)
 	if err != nil {
@@ -216,14 +223,14 @@ func promptToken() (string, error) {
 	}
 }
 
-func promptURL(repo repository.RepoCommon) (string, error) {
+func promptURL(repo repository.RepoCommon, baseUrl string) (string, error) {
 	// remote suggestions
 	remotes, err := repo.GetRemotes()
 	if err != nil {
 		return "", errors.Wrap(err, "getting remotes")
 	}
 
-	validRemotes := getValidGitlabRemoteURLs(remotes)
+	validRemotes := getValidGitlabRemoteURLs(baseUrl, remotes)
 	if len(validRemotes) > 0 {
 		for {
 			fmt.Println("\nDetected projects:")
@@ -277,38 +284,79 @@ func promptURL(repo repository.RepoCommon) (string, error) {
 	}
 }
 
-func getProjectPath(projectUrl string) (string, error) {
+func parseProjectURL(projectUrl string) (*url.URL, error) {
 	cleanUrl := strings.TrimSuffix(projectUrl, ".git")
 	cleanUrl = strings.Replace(cleanUrl, "git@", "https://", 1)
 	objectUrl, err := url.Parse(cleanUrl)
 	if err != nil {
-		return "", ErrBadProjectURL
+		return nil, ErrBadProjectURL
+	}
+
+	return objectUrl, nil
+}
+
+func getProjectPath(projectUrl string) (string, error) {
+	objectUrl, err := parseProjectURL(projectUrl)
+	if err != nil {
+		return "", err
 	}
 
 	return objectUrl.Path[1:], nil
 }
 
-func getValidGitlabRemoteURLs(remotes map[string]string) []string {
+// getInstanceProjectPath return the path of a project relative to the base URL of the
+// Gitlab instance, and fail if the project is not hosted on that instance.
+func getInstanceProjectPath(baseUrl, projectUrl string) (string, error) {
+	objectBaseUrl, err := url.Parse(baseUrl)
+	if err != nil || objectBaseUrl.Scheme == "" || objectBaseUrl.Host == "" {
+		return "", ErrBadBaseURL
+	}
+
+	objectUrl, err := parseProjectURL(projectUrl)
+	if err != nil {
+		return "", err
+	}
+
+	// Gitlab can be served from a sub-path, e.g. https://example.com/gitlab/
+	basePath := strings.TrimSuffix(objectBaseUrl.Path, "/") + "/"
+
+	if !strings.EqualFold(objectUrl.Hostname(), objectBaseUrl.Hostname()) ||
+		!strings.HasPrefix(objectUrl.Path, basePath) {
+		return "", fmt.Errorf("project URL (%s) doesn't belong to the Gitlab instance %s", projectUrl, baseUrl)
+	}
+
+	projectPath := strings.TrimPrefix(objectUrl.Path, basePath)
+	if projectPath == "" {
+		return "", ErrBadProjectURL
+	}
+
+	return projectPath, nil
+}
+
+func getValidGitlabRemoteURLs(baseUrl string, remotes map[string]string) []string {
 	urls := make([]string, 0, len(remotes))
 	for _, u := range remotes {
-		path, err := getProjectPath(u)
+		path, err := getInstanceProjectPath(baseUrl, u)
 		if err != nil {
 			continue
 		}
 
-		urls = append(urls, fmt.Sprintf("%s%s", "gitlab.com", path))
+		urls = append(urls, fmt.Sprintf("%s/%s", strings.TrimSuffix(baseUrl, "/"), path))
 	}
 
 	return urls
 }
 
-func validateProjectURL(url string, token *auth.Token) (int, error) {
-	projectPath, err := getProjectPath(url)
+func validateProjectURL(baseUrl, url string, token *auth.Token) (int, error) {
+	projectPath, err := getInstanceProjectPath(baseUrl, url)
 	if err != nil {
 		return 0, err
 	}
 
-	client := buildClient(token)
+	client, err := buildClient(baseUrl, token)
+	if err != nil {
+		return 0, err
+	}
 
 	project, _, err := client.Projects.GetProject(projectPath, &gitlab.GetProjectOptions{})
 	if err != nil {
