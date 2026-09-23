@@ -144,6 +144,9 @@ func (o *OverseerSystem) processMessages() {
 			case parachaintypes.DistributeBitfield:
 				subsystem = o.nameToSubsystem[parachaintypes.BitfieldDistribution]
 
+			case parachaintypes.AvailabilityDistributionMessageFetchPoV:
+				subsystem = o.nameToSubsystem[parachaintypes.AvailabilityDistribution]
+
 			case networkbridgeevents.PeerMessage[validationprotocol.ValidationProtocol]:
 				value, err := msg.Message.Value()
 				if err != nil {
@@ -195,12 +198,19 @@ func (o *OverseerSystem) processMessages() {
 					continue
 				}
 				msg.Resp <- rt
+				continue
 
 			default:
-				logger.Error("unknown message type")
+				logger.Errorf("unknown message type %T", msg)
+				continue
 			}
 
-			overseerToSubsystem := o.subsystems[subsystem]
+			// Sending on the nil channel of an unregistered subsystem would block the overseer forever.
+			overseerToSubsystem, ok := o.subsystems[subsystem]
+			if !ok {
+				logger.Errorf("no subsystem registered to handle message of type %T", msg)
+				continue
+			}
 			overseerToSubsystem <- msg
 
 		case <-o.ctx.Done():
