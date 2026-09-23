@@ -59,6 +59,15 @@ func checkOptimismPayloadAttributes(payloadAttributes *engine.PayloadAttributes,
 		return errors.New("non-empty eip155Params pre-Holocene")
 	}
 
+	// Jovian - minBaseFee, required by the miner to encode the extraData
+	if cfg.IsMinBaseFee(payloadAttributes.Timestamp) {
+		if payloadAttributes.MinBaseFee == nil {
+			return errors.New("nil minBaseFee post-Jovian")
+		}
+	} else if payloadAttributes.MinBaseFee != nil { // pre-Jovian
+		return errors.New("non-nil minBaseFee pre-Jovian")
+	}
+
 	// Note: PayloadAttributes don't contain the Isthmus withdrawalsRoot, it's set during block assembly.
 
 	return nil
