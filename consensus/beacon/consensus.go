@@ -125,7 +125,7 @@ func (beacon *Beacon) VerifyHeader(chain consensus.ChainHeaderReader, header *ty
 	// Check >0 TDs with pre-merge, --0 TDs with post-merge rules
 	if header.Difficulty.Sign() > 0 ||
 		// OP-Stack: transitioned networks must use legacy consensus pre-Bedrock
-		cfg.IsOptimismBedrock(header.Number) {
+		cfg.IsOptimismPreBedrock(header.Number) {
 		return beacon.ethone.VerifyHeader(chain, header)
 	}
 	return beacon.verifyHeader(chain, header, parent)
@@ -396,6 +396,16 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 
 	// Assign the final state root to header.
 	header.Root = state.IntermediateRoot(true)
+
+	// Store DA footprint in BlobGasUsed header field if it hasn't already been set yet.
+	// Builder code may already calculate it during block building to avoid recalculating it here.
+	if chain.Config().IsDAFootprintBlockLimit(header.Time) && (header.BlobGasUsed == nil || *header.BlobGasUsed == 0) {
+		daFootprint, err := types.CalcDAFootprint(body.Transactions)
+		if err != nil {
+			return nil, fmt.Errorf("error calculating DA footprint: %w", err)
+		}
+		header.BlobGasUsed = &daFootprint
+	}
 
 	if chain.Config().IsOptimismIsthmus(header.Time) {
 		if body.Withdrawals == nil || len(body.Withdrawals) > 0 { // We verify nil/empty withdrawals in the CL pre-Isthmus

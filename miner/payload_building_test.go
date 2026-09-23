@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/engine"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/consensus/beacon"
 	"github.com/ethereum/go-ethereum/consensus/clique"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
@@ -127,7 +128,7 @@ func newTestWorkerBackend(t *testing.T, chainConfig *params.ChainConfig, engine 
 		gspec.ExtraData = make([]byte, 32+common.AddressLength+crypto.SignatureLength)
 		copy(gspec.ExtraData[32:32+common.AddressLength], testBankAddress.Bytes())
 		e.Authorize(testBankAddress)
-	case *ethash.Ethash:
+	case *ethash.Ethash, *beacon.Beacon:
 	default:
 		t.Fatalf("unexpected consensus engine type: %T", engine)
 	}
@@ -203,23 +204,23 @@ func TestDAFilters(t *testing.T) {
 }
 
 func holoceneConfig() *params.ChainConfig {
-	config := *params.TestChainConfig
-	config.LondonBlock = big.NewInt(0)
-	t := uint64(0)
-	config.CanyonTime = &t
-	config.HoloceneTime = &t
-	canyonDenom := uint64(250)
-	config.Optimism = &params.OptimismConfig{
-		EIP1559Elasticity:        6,
-		EIP1559Denominator:       50,
-		EIP1559DenominatorCanyon: &canyonDenom,
-	}
+	config := *params.OptimismTestConfig
+	config.IsthmusTime = nil
+	config.JovianTime = nil
+	config.PragueTime = nil
+	config.OsakaTime = nil
 	return &config
 }
 
-func jovianConfig() *params.ChainConfig {
+func isthmusConfig() *params.ChainConfig {
 	config := holoceneConfig()
-	zero := uint64(0)
+	config.IsthmusTime = &zero
+	config.PragueTime = &zero
+	return config
+}
+
+func jovianConfig() *params.ChainConfig {
+	config := isthmusConfig()
 	config.JovianTime = &zero
 	return config
 }
@@ -260,6 +261,15 @@ func testBuildPayload(t *testing.T, noTxPool, interrupt bool, params1559 []byte,
 
 	args := newPayloadArgs(b.chain.CurrentBlock().Hash(), params1559, minBaseFee)
 	args.NoTxPool = noTxPool
+	if config.IsOptimism() {
+		args.Withdrawals = types.Withdrawals{}
+		if config.IsCancun(b.chain.CurrentBlock().Number, args.Timestamp) {
+			args.BeaconRoot = new(common.Hash)
+		}
+		if config.IsDAFootprintBlockLimit(args.Timestamp) {
+			args.Transactions = []*types.Transaction{types.NewTx(jovianDepositTx(testDAFootprintGasScalar))}
+		}
+	}
 
 	// payload resolution now interrupts block building, so we have to
 	// wait for the payloading building process to build its first block
@@ -269,6 +279,9 @@ func testBuildPayload(t *testing.T, noTxPool, interrupt bool, params1559 []byte,
 	}
 	verify := func(outer *engine.ExecutionPayloadEnvelope, txs int) {
 		t.Helper()
+		if config.IsDAFootprintBlockLimit(testTimestamp) {
+			txs++ // account for the L1 attributes deposit tx
+		}
 		if outer == nil {
 			t.Fatal("ExecutionPayloadEnvelope is nil")
 		}
@@ -380,6 +393,8 @@ func testDAFilters(t *testing.T, maxDATxSize, maxDABlockSize *big.Int, expectedT
 	params1559 := []byte{0, 1, 2, 3, 4, 5, 6, 7}
 	args := newPayloadArgs(b.chain.CurrentBlock().Hash(), params1559, &zero)
 	args.NoTxPool = false
+	args.Withdrawals = types.Withdrawals{}
+	args.BeaconRoot = new(common.Hash)
 
 	payload, err := w.buildPayload(args, false)
 	if err != nil {
@@ -466,7 +481,7 @@ func genTxs(startNonce, count uint64) types.Transactions {
 			Nonce:    nonce,
 			To:       &testUserAddress,
 			Value:    big.NewInt(1000),
-			Gas:      params.TxGas + uint64(len(randomBytes))*16,
+			Gas:      params.TxGas + uint64(len(randomBytes))*40,
 			GasPrice: big.NewInt(params.InitialBaseFee),
 			Data:     randomBytes,
 		})
