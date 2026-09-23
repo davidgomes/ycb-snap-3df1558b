@@ -1799,7 +1799,7 @@ def normalize_service_final(service: dict[str, Any], project_dir: str) -> dict[s
         build = service["build"]
         context = build if isinstance(build, str) else build.get("context", ".")
 
-        if not is_path_git_url(context):
+        if not is_context_git_url(context):
             context = os.path.normpath(os.path.join(project_dir, context))
         if not isinstance(service["build"], dict):
             service["build"] = {}
@@ -2788,9 +2788,25 @@ async def compose_push(compose: PodmanCompose, args: argparse.Namespace) -> None
         await compose.podman.run([], "push", [cnt["image"]])
 
 
-def is_path_git_url(path: str) -> bool:
-    r = urllib.parse.urlparse(path)
-    return r.scheme == 'git' or r.path.endswith('.git')
+def is_context_git_url(path: str) -> bool:
+    """Return True when a build context is a remote Git URL, not a local path.
+
+    A directory whose name ends in ``.git`` is still a local path. Recognition
+    is based on the URL scheme, an scp-like ``host:path`` form, or an SSH-style
+    ``user@host`` form.
+    """
+    parsed = urllib.parse.urlparse(path)
+    if parsed.scheme in ('git', 'http', 'https', 'ssh', 'file', 'rsync'):
+        return True
+    # ``host:path`` and ``github:org/repo`` are parsed as a scheme with no netloc.
+    if parsed.scheme != "" and parsed.netloc == "" and parsed.path != "":
+        return True
+    if parsed.scheme == "":
+        # ``user@host:path`` has no scheme; prefix one so urlparse can read the user.
+        parsed = urllib.parse.urlparse("ssh://" + path)
+        if parsed.username:
+            return True
+    return False
 
 
 def adjust_build_ssh_key_paths(compose: PodmanCompose, agent_or_key: str) -> str:
@@ -2834,8 +2850,8 @@ def container_to_build_args(
             cleanup_callbacks.append(cleanup_temp_dockfile)
 
     build_args = []
-
-    if not is_path_git_url(ctx):
+    # A local context (including a directory name ending in .git) still needs -f.
+    if not is_context_git_url(ctx):
         custom_dockerfile_given = False
         if dockerfile:
             dockerfile = os.path.join(ctx, dockerfile)
