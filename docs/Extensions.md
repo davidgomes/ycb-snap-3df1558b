@@ -156,6 +156,9 @@ x-podman:
 By default `default_net_name_compat` is `false`. This will change to `true` at some point and the
 setting will be removed.
 
+This setting can also be changed by setting `PODMAN_COMPOSE_DEFAULT_NET_NAME_COMPAT` environment
+variable.
+
 ## Compatibility of default network behavior between docker-compose and podman-compose
 
 When there is no network defined (neither network-mode nor networks) in service,
@@ -176,6 +179,9 @@ x-podman:
     default_net_behavior_compat: true
 ```
 
+This setting can also be changed by setting `PODMAN_COMPOSE_DEFAULT_NET_BEHAVIOR_COMPAT` environment
+variable.
+
 ## Custom pods management
 
 Podman-compose can have containers in pods. This can be controlled by extension key x-podman in_pod.
@@ -195,6 +201,8 @@ x-podman:
     in_pod: false
 ```
 
+This setting can also be changed by setting `PODMAN_COMPOSE_IN_POD` environment variable.
+
 It is also possible to override the default arguments for pod creation that are
 used when --pod-args is not passed on the command line:
 ```yml
@@ -208,3 +216,24 @@ x-podman:
 ```
 When not set in docker-compose.yml or on the command line, the pod args default
 to `["--infra=false", "--share="]`.
+
+This setting can also be changed by setting `PODMAN_COMPOSE_POD_ARGS` environment variable. The
+value is split into arguments the same way as `--pod-args`, e.g.
+`PODMAN_COMPOSE_POD_ARGS="--infra=false --share= --cpus=1"`.
+
+## Setting x-podman values using environment variables
+
+Every setting under the global `x-podman` key can also be provided using an environment variable
+named `PODMAN_COMPOSE_` followed by the setting name in uppercase, e.g. `PODMAN_COMPOSE_IN_POD`
+for `in_pod`. Environment variables can be exported in the shell or put into the `.env` file.
+
+When the same setting is provided in several places, the following order of precedence is used:
+
+1. Command line arguments (`--in-pod`, `--pod-args`)
+2. `PODMAN_COMPOSE_*` environment variables
+3. Global `x-podman` key in the compose file
+4. Default value
+
+Boolean settings accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`. Empty environment
+variables are ignored. Unknown setting names and invalid values are reported as warnings and do not
+override other sources.
