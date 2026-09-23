@@ -174,12 +174,18 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 
 	misc.EnsureCreate2Deployer(miner.chainConfig, work.header.Time, work.state)
 
+	isJovian := miner.chainConfig.IsJovian(work.header.Time)
 	for _, tx := range genParam.txs {
 		from, _ := types.Sender(work.signer, tx)
 		work.state.SetTxContext(tx.Hash(), work.tcount)
 		err = miner.commitTransaction(work, tx)
 		if err != nil {
 			return &newPayloadResult{err: fmt.Errorf("failed to force-include tx: %s type: %d sender: %s nonce: %d, err: %w", tx.Hash(), tx.Type(), from, tx.Nonce(), err)}
+		}
+		// OP-Stack addition: forced non-deposit txs (e.g. from derived batches) count towards
+		// the Jovian DA footprint, same as in core.StateProcessor.Process.
+		if isJovian && !tx.IsDepositTx() {
+			work.daFootprint += tx.RollupCostData().EstimatedDASize().Uint64() * params.DAFootprintGasScalar
 		}
 	}
 	if !genParam.noTxs {
@@ -202,7 +208,7 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 	}
 
 	// OP-Stack addition: Jovian maxes the block.gasUsed with the calldata footprint
-	if miner.chainConfig.IsJovian(work.header.Time) && work.daFootprint > work.header.GasUsed {
+	if isJovian && work.daFootprint > work.header.GasUsed {
 		work.header.GasUsed = work.daFootprint
 	}
 
@@ -501,7 +507,9 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 
 	// OP-Stack additions: throttling and DA footprint limit
 	blockDABytes := new(big.Int)
-	daFootprintLeft := big.NewInt(int64(gasLimit))
+	// The DA footprint limit is shared with forced txs and with previous calls for the same block.
+	daFootprintLeft := new(big.Int).SetUint64(gasLimit)
+	daFootprintLeft.Sub(daFootprintLeft, new(big.Int).SetUint64(env.daFootprint))
 	isJovian := miner.chainConfig.IsJovian(env.header.Time)
 
 	for {
