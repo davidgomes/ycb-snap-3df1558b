@@ -7,6 +7,22 @@ import (
 	parachaintypes "github.com/ChainSafe/gossamer/dot/parachain/types"
 )
 
+type statementKind uint8
+
+const (
+	seconded statementKind = iota
+	validated
+)
+
+// statementFilter is the name used by grid-tracker knowledge code.
+type statementFilter = StatementFilter
+
+// newStatementFilter creates a new statementFilter.
+// If full is true, the statementFilter will be initialised with all bits set to 1.
+func newStatementFilter(groupSize uint, full bool) (*statementFilter, error) {
+	return NewStatementFilter(groupSize, full)
+}
+
 // StatementFilter contains bitfields indicating the statements that are known or undesired about a candidate.
 type StatementFilter struct {
 	// Seconded statements. '1' is known or undesired.
@@ -79,4 +95,42 @@ func (s *StatementFilter) MaskSeconded(mask parachaintypes.BitVec) {
 // Bits appearing in mask will not appear in the filter afterwards.
 func (s *StatementFilter) MaskValid(mask parachaintypes.BitVec) {
 	s.validatedInGroup.Mask(mask)
+}
+
+func (s *statementFilter) contains(index uint, statementKind statementKind) bool {
+	switch statementKind {
+	case seconded:
+		b, err := s.secondedInGroup.Get(index)
+		if err != nil {
+			logger.Warnf("failed to access index %d in secondedInGroup: %v", index, err)
+			return false
+		}
+		return b
+	case validated:
+		b, err := s.validatedInGroup.Get(index)
+		if err != nil {
+			logger.Warnf("failed to access index %d in validatedInGroup: %v", index, err)
+			return false
+		}
+		return b
+	default:
+		panic("unreachable")
+	}
+}
+
+func (s *statementFilter) set(index uint, statementKind statementKind) {
+	switch statementKind {
+	case seconded:
+		err := s.secondedInGroup.Set(index, true)
+		if err != nil {
+			logger.Warnf("failed to set index %d in secondedInGroup: %v", index, err)
+		}
+	case validated:
+		err := s.validatedInGroup.Set(index, true)
+		if err != nil {
+			logger.Warnf("failed to set index %d in validatedInGroup: %v", index, err)
+		}
+	default:
+		panic("unreachable")
+	}
 }

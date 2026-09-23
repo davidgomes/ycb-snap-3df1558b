@@ -10,6 +10,26 @@ import (
 	"testing"
 )
 
+func TestStatementFilter_containsAndSet(t *testing.T) {
+	t.Parallel()
+
+	filter, err := newStatementFilter(2, false)
+	require.NoError(t, err)
+
+	filter.set(0, validated)
+	require.True(t, filter.contains(0, validated))
+	require.False(t, filter.contains(1, validated))
+
+	filter.set(1, seconded)
+	require.True(t, filter.contains(1, seconded))
+
+	require.False(t, filter.contains(9, seconded))
+	require.False(t, filter.contains(9, validated))
+	filter.set(9, seconded)
+	filter.set(9, validated)
+	require.False(t, filter.contains(1, validated))
+}
+
 func TestStatementFilter_HasLen(t *testing.T) {
 	t.Parallel()
 
