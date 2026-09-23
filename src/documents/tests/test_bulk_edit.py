@@ -514,12 +514,23 @@ class TestPDFActions(DirectoriesMixin, TestCase):
             Path(__file__).parent / "samples" / "simple.jpg",
             img_doc,
         )
+        img_doc_archive = self.dirs.archive_dir / "sample_image.pdf"
+        shutil.copy(
+            Path(__file__).parent
+            / "samples"
+            / "documents"
+            / "originals"
+            / "0000001.pdf",
+            img_doc_archive,
+        )
         self.img_doc = Document.objects.create(
             checksum="D",
             title="D",
             filename=img_doc,
             mime_type="image/jpeg",
         )
+        self.img_doc.archive_filename = img_doc_archive
+        self.img_doc.save()
 
     @mock.patch("documents.tasks.consume_file.s")
     def test_merge(self, mock_consume_file):
@@ -604,6 +615,73 @@ class TestPDFActions(DirectoriesMixin, TestCase):
             delete_documents_args[0],
             doc_ids,
         )
+
+    @mock.patch("documents.tasks.consume_file.s")
+    def test_merge_with_archive_fallback(self, mock_consume_file):
+        """
+        GIVEN:
+            - Existing documents
+        WHEN:
+            - Merge action is called with 2 documents, one of which is an image and archive_fallback is set to True
+        THEN:
+            - Image document should be included via its archive version
+        """
+        doc_ids = [self.doc2.id, self.img_doc.id]
+
+        result = bulk_edit.merge(doc_ids, archive_fallback=True)
+        self.assertEqual(result, "OK")
+
+        expected_filename = (
+            f"{'_'.join([str(doc_id) for doc_id in doc_ids])[:100]}_merged.pdf"
+        )
+
+        mock_consume_file.assert_called()
+        consume_file_args, _ = mock_consume_file.call_args
+        merged_file = Path(consume_file_args[0].original_file)
+        self.assertEqual(merged_file.name, expected_filename)
+
+        import pikepdf
+
+        with (
+            pikepdf.open(self.doc2.source_path) as doc2_pdf,
+            pikepdf.open(self.img_doc.archive_path) as img_archive_pdf,
+            pikepdf.open(merged_file) as merged_pdf,
+        ):
+            self.assertEqual(
+                len(merged_pdf.pages),
+                len(doc2_pdf.pages) + len(img_archive_pdf.pages),
+            )
+
+    @mock.patch("documents.tasks.consume_file.s")
+    def test_merge_without_archive_fallback_skips_non_pdf(self, mock_consume_file):
+        """
+        GIVEN:
+            - Existing documents
+        WHEN:
+            - Merge action is called with 2 documents, one of which is an image and archive_fallback is not set
+        THEN:
+            - Image document original is not a PDF so it is excluded from the merge
+        """
+        doc_ids = [self.doc2.id, self.img_doc.id]
+
+        with self.assertLogs("paperless.bulk_edit", level="ERROR") as cm:
+            result = bulk_edit.merge(doc_ids)
+        self.assertEqual(result, "OK")
+        self.assertIn(
+            f"Error merging document {self.img_doc.id}, it will not be included in the merge",
+            cm.output[0],
+        )
+
+        mock_consume_file.assert_called()
+        consume_file_args, _ = mock_consume_file.call_args
+
+        import pikepdf
+
+        with (
+            pikepdf.open(self.doc2.source_path) as doc2_pdf,
+            pikepdf.open(consume_file_args[0].original_file) as merged_pdf,
+        ):
+            self.assertEqual(len(merged_pdf.pages), len(doc2_pdf.pages))
 
     @mock.patch("documents.tasks.consume_file.delay")
     @mock.patch("pikepdf.open")

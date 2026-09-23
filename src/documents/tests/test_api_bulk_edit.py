@@ -1110,7 +1110,29 @@ class TestBulkEditAPI(DirectoriesMixin, APITestCase):
         args, kwargs = m.call_args
         self.assertCountEqual(args[0], [self.doc2.id, self.doc3.id])
         self.assertEqual(kwargs["metadata_document_id"], self.doc3.id)
+        self.assertEqual(kwargs["archive_fallback"], False)
         self.assertEqual(kwargs["user"], self.user)
+
+        m.reset_mock()
+        response = self.client.post(
+            "/api/documents/bulk_edit/",
+            json.dumps(
+                {
+                    "documents": [self.doc2.id, self.doc3.id],
+                    "method": "merge",
+                    "parameters": {
+                        "metadata_document_id": self.doc3.id,
+                        "archive_fallback": True,
+                    },
+                },
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        m.assert_called_once()
+        _, kwargs = m.call_args
+        self.assertEqual(kwargs["archive_fallback"], True)
 
     @mock.patch("documents.serialisers.bulk_edit.merge")
     def test_merge_and_delete_insufficient_permissions(self, m):
@@ -1179,6 +1201,23 @@ class TestBulkEditAPI(DirectoriesMixin, APITestCase):
                     "method": "merge",
                     "parameters": {
                         "delete_originals": "not_boolean",
+                    },
+                },
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        m.assert_not_called()
+
+        response = self.client.post(
+            "/api/documents/bulk_edit/",
+            json.dumps(
+                {
+                    "documents": [self.doc1.id, self.doc2.id],
+                    "method": "merge",
+                    "parameters": {
+                        "archive_fallback": "not_boolean",
                     },
                 },
             ),
