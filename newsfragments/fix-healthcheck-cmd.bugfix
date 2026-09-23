@@ -1,0 +1,1 @@
+Fixed conversion of healthcheck test commands (CMD, CMD-SHELL and plain string) so they are passed to podman as a JSON array instead of broken `/bin/sh -c` quoting.
