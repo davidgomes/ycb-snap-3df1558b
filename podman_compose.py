@@ -2790,7 +2790,14 @@ async def compose_push(compose: PodmanCompose, args: argparse.Namespace) -> None
 
 def is_path_git_url(path: str) -> bool:
     r = urllib.parse.urlparse(path)
-    return r.scheme == 'git' or r.path.endswith('.git')
+    if r.scheme == 'git':
+        return True
+    if r.scheme in ('http', 'https', 'ssh') and r.netloc:
+        return r.path.endswith('.git') or '#' in path or bool(r.fragment)
+    # scp-like syntax: user@host:path.git
+    return bool(re.match(r'^[^@/:\s]+@[^/:\s]+:', path)) and (
+        r.path.endswith('.git') or path.split('#', 1)[0].endswith('.git')
+    )
 
 
 def adjust_build_ssh_key_paths(compose: PodmanCompose, agent_or_key: str) -> str:
