@@ -549,6 +549,9 @@ func NewL1CostFuncFjord(l1BaseFee, l1BlobBaseFee, baseFeeScalar, blobFeeScalar *
 	}
 }
 
+// DefaultDAFootprintGasScalar is used when the L1 attributes do not specify a DA footprint gas scalar.
+const DefaultDAFootprintGasScalar = 400
+
 // estimatedDASizeScaled estimates the number of bytes the transaction will occupy in the DA batch using the Fjord
 // linear regression model, and returns this value scaled up by 1e6.
 func (cd RollupCostData) estimatedDASizeScaled() *big.Int {

@@ -18,6 +18,7 @@ package miner
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -80,10 +81,25 @@ type environment struct {
 	sidecars []*types.BlobTxSidecar
 	blobs    int
 
+	daFootprint uint64 // cumulative DA footprint of non-deposit txs (Jovian)
+
 	witness *stateless.Witness
 
 	noTxs  bool            // true if we are reproducing a block, and do not have to check interop txs
 	rpcCtx context.Context // context to control block-building RPC work. No RPC allowed if nil.
+}
+
+// daFootprintGasScalarFromTxs reads the DA footprint gas scalar from the L1 attributes
+// deposit (bytes 176:178 of its calldata), falling back to the default when unset.
+func daFootprintGasScalarFromTxs(txs []*types.Transaction) uint64 {
+	if len(txs) > 0 && txs[0].IsDepositTx() {
+		if data := txs[0].Data(); len(data) >= 178 {
+			if s := binary.BigEndian.Uint16(data[176:178]); s != 0 {
+				return uint64(s)
+			}
+		}
+	}
+	return types.DefaultDAFootprintGasScalar
 }
 
 // txFits reports whether the transaction fits into the block size limit.
@@ -489,6 +505,10 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 		env.gasPool = new(core.GasPool).AddGas(gasLimit)
 	}
 	blockDABytes := new(big.Int)
+	var daFootprintGasScalar uint64
+	if miner.chainConfig.IsDAFootprintBlockLimit(env.header.Time) {
+		daFootprintGasScalar = daFootprintGasScalarFromTxs(env.txs)
+	}
 	for {
 		// Check interruption signal and abort building if it's fired.
 		if interrupt != nil {
@@ -581,6 +601,16 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 		if !env.txFitsSize(tx) {
 			break
 		}
+
+		var txDAFootprint uint64
+		if daFootprintGasScalar != 0 && !tx.IsDepositTx() {
+			txDAFootprint = tx.RollupCostData().EstimatedDASize().Uint64() * daFootprintGasScalar
+			if env.daFootprint+txDAFootprint > gasLimit {
+				log.Trace("Not enough DA footprint left for transaction", "hash", ltx.Hash, "used", env.daFootprint, "needed", txDAFootprint)
+				txs.Pop()
+				continue
+			}
+		}
 		// Error may be ignored here. The error has already been checked
 		// during transaction acceptance in the transaction pool.
 		from, _ := types.Sender(env.signer, tx)
@@ -622,6 +652,7 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 		case errors.Is(err, nil):
 			// Everything ok, collect the logs and shift in the next transaction from the same account
 			blockDABytes = daBytesAfter
+			env.daFootprint += txDAFootprint
 			txs.Shift()
 
 		default:
