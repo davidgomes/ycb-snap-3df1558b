@@ -706,6 +706,13 @@ func (miner *Miner) fillTransactions(interrupt *atomic.Int32, env *environment) 
 	if miner.chainConfig.IsOsaka(env.header.Number, env.header.Time) {
 		filter.GasLimitCap = params.MaxTxGas
 	}
+	// Promote transactions that were admitted asynchronously before selection.
+	// Without this, parallel tests can observe Has(tx) while Pending is still
+	// empty because LegacyPool.Add(sync=false) returns before promotion.
+	if err := miner.txpool.Sync(); err != nil {
+		log.Debug("Failed to sync transaction pool before block building", "err", err)
+	}
+
 	filter.OnlyPlainTxs, filter.OnlyBlobTxs = true, false
 	pendingPlainTxs := miner.txpool.Pending(filter)
 

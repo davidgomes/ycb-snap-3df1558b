@@ -114,8 +114,10 @@ func testInteropTransaction(t *testing.T, failsafeEnabled bool, expectIncluded b
 	miner, testBankKey, testUserAddress := createInteropMiner(t, failsafeEnabled, nil)
 	tx := createInteropTransaction(t, miner, testBankKey, testUserAddress)
 
-	// Add the transaction to the pool
-	err := miner.txpool.Add(types.Transactions{tx}, false)
+	// Add the transaction synchronously so it is promoted into the pending set
+	// before block building. An async add races with parallel miner tests and
+	// can leave the hash visible via Has while Pending is still empty.
+	err := miner.txpool.Add(types.Transactions{tx}, true)
 	if len(err) > 0 && err[0] != nil {
 		t.Fatalf("Failed to add interop transaction to pool: %v", err[0])
 	}
