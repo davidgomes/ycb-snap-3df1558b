@@ -79,7 +79,7 @@ func (j *Jira) Configure(repo *cache.RepoCache, params core.BridgeParams) (core.
 		}
 		login = l
 	default:
-		login := params.Login
+		login = params.Login
 		if login == "" {
 			// TODO: validate username
 			login, err = input.Prompt("JIRA login", "login", input.Required)
@@ -98,6 +98,7 @@ func (j *Jira) Configure(repo *cache.RepoCache, params core.BridgeParams) (core.
 	conf[confKeyBaseUrl] = baseURL
 	conf[confKeyProject] = project
 	conf[confKeyCredentialType] = credType
+	conf[confKeyDefaultLogin] = login
 
 	err = j.ValidateConfig(conf)
 	if err != nil {

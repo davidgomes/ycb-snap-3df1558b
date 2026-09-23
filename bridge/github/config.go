@@ -126,6 +126,7 @@ func (g *Github) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 	conf[core.ConfigKeyTarget] = target
 	conf[confKeyOwner] = owner
 	conf[confKeyProject] = project
+	conf[confKeyDefaultLogin] = login
 
 	err = g.ValidateConfig(conf)
 	if err != nil {
