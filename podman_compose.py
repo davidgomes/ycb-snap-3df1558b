@@ -29,11 +29,6 @@ import urllib.parse
 from asyncio import Task
 from enum import Enum
 
-try:
-    from shlex import quote as cmd_quote
-except ImportError:
-    from pipes import quote as cmd_quote  # pylint: disable=deprecated-module
-
 # import fnmatch
 # fnmatch.fnmatchcase(env, "*_HOST")
 
@@ -1225,10 +1220,11 @@ async def container_to_args(compose, cnt, detached=True, no_deps=False):
     if healthcheck_test:
         # If it's a string, it's equivalent to specifying CMD-SHELL
         if isinstance(healthcheck_test, str):
-            # podman does not add shell to handle command with whitespace
+            # A bare string is equivalent to CMD-SHELL. Pass the Docker-style
+            # test array so Podman keeps the shell command intact.
             podman_args.extend([
                 "--healthcheck-command",
-                "/bin/sh -c " + cmd_quote(healthcheck_test),
+                json.dumps(["CMD-SHELL", healthcheck_test]),
             ])
         elif is_list(healthcheck_test):
             healthcheck_test = healthcheck_test.copy()
@@ -1237,13 +1233,12 @@ async def container_to_args(compose, cnt, detached=True, no_deps=False):
             if healthcheck_type == "NONE":
                 podman_args.append("--no-healthcheck")
             elif healthcheck_type == "CMD":
-                cmd_q = "' '".join([cmd_quote(i) for i in healthcheck_test])
-                podman_args.extend(["--healthcheck-command", "/bin/sh -c " + cmd_q])
+                # Exec form: remaining items are the argv, not a shell string.
+                podman_args.extend(["--healthcheck-command", json.dumps(healthcheck_test)])
             elif healthcheck_type == "CMD-SHELL":
                 if len(healthcheck_test) != 1:
                     raise ValueError("'CMD_SHELL' takes a single string after it")
-                cmd_q = cmd_quote(healthcheck_test[0])
-                podman_args.extend(["--healthcheck-command", "/bin/sh -c " + cmd_q])
+                podman_args.extend(["--healthcheck-command", json.dumps(healthcheck_test)])
             else:
                 raise ValueError(
                     f"unknown healthcheck test type [{healthcheck_type}],\
