@@ -433,6 +433,7 @@ STORAGES = {
 _CELERY_REDIS_URL, _CHANNELS_REDIS_URL = _parse_redis_url(
     os.getenv("PAPERLESS_REDIS", None),
 )
+_REDIS_KEY_PREFIX = os.getenv("PAPERLESS_REDIS_PREFIX", "")
 
 TEMPLATES = [
     {
@@ -458,7 +459,7 @@ CHANNEL_LAYERS = {
             "hosts": [_CHANNELS_REDIS_URL],
             "capacity": 2000,  # default 100
             "expiry": 15,  # default 60
-            "prefix": os.getenv("PAPERLESS_REDIS_PREFIX", ""),
+            "prefix": _REDIS_KEY_PREFIX,
         },
     },
 }
@@ -882,7 +883,7 @@ CELERY_SEND_TASK_SENT_EVENT = True
 CELERY_BROKER_CONNECTION_RETRY = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_TRANSPORT_OPTIONS = {
-    "global_keyprefix": os.getenv("PAPERLESS_REDIS_PREFIX", ""),
+    "global_keyprefix": _REDIS_KEY_PREFIX,
 }
 
 CELERY_TASK_TRACK_STARTED = True
@@ -903,22 +904,88 @@ CELERY_BEAT_SCHEDULE = _parse_beat_schedule()
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#beat-schedule-filename
 CELERY_BEAT_SCHEDULE_FILENAME = str(DATA_DIR / "celerybeat-schedule.db")
 
-# django setting.
-CACHES = {
-    "default": {
-        "BACKEND": os.environ.get(
-            "PAPERLESS_CACHE_BACKEND",
-            "django.core.cache.backends.redis.RedisCache",
-        ),
-        "LOCATION": _CHANNELS_REDIS_URL,
-        "KEY_PREFIX": os.getenv("PAPERLESS_REDIS_PREFIX", ""),
-    },
-}
 
-if DEBUG and os.getenv("PAPERLESS_CACHE_BACKEND") is None:
-    CACHES["default"]["BACKEND"] = (
-        "django.core.cache.backends.locmem.LocMemCache"  # pragma: no cover
+# Cachalot: optional database read cache. The library is not loaded unless enabled.
+def _parse_read_cache_ttl() -> int:
+    """
+    TTL in seconds. Invalid, missing, or non-positive values fall back to 1 hour.
+    Values above one year are clamped.
+    """
+    raw = os.getenv("PAPERLESS_READ_CACHE_TTL")
+    if raw is None or raw.strip() == "":
+        return 3600
+    try:
+        ttl = int(raw)
+    except ValueError:
+        return 3600
+    if ttl <= 0:
+        return 3600
+    return min(ttl, 31536000)
+
+
+def _parse_cachalot_settings():
+    global INSTALLED_APPS
+    # Unset uses the same default as PAPERLESS_REDIS (redis://localhost:6379).
+    # An explicit PAPERLESS_READ_CACHE_REDIS_URL overrides that, including when
+    # PAPERLESS_REDIS itself points somewhere else.
+    configured_redis_url = os.getenv("PAPERLESS_READ_CACHE_REDIS_URL")
+    _, redis_url = _parse_redis_url(
+        configured_redis_url if configured_redis_url else None,
     )
+    result = {
+        "CACHALOT_CACHE": "read-cache",
+        "CACHALOT_ENABLED": __get_boolean(
+            "PAPERLESS_DB_READ_CACHE_ENABLED",
+            default="no",
+        ),
+        "CACHALOT_FINAL_SQL_CHECK": True,
+        "CACHALOT_QUERY_KEYGEN": "paperless.db_cache.custom_get_query_cache_key",
+        "CACHALOT_TABLE_KEYGEN": "paperless.db_cache.custom_get_table_cache_key",
+        "CACHALOT_REDIS_URL": redis_url,
+        "CACHALOT_TIMEOUT": _parse_read_cache_ttl(),
+    }
+    if result["CACHALOT_ENABLED"] and "cachalot" not in INSTALLED_APPS:
+        INSTALLED_APPS.append("cachalot")
+    return result
+
+
+_cachalot_settings = _parse_cachalot_settings()
+CACHALOT_ENABLED = _cachalot_settings["CACHALOT_ENABLED"]
+CACHALOT_CACHE = _cachalot_settings["CACHALOT_CACHE"]
+CACHALOT_TIMEOUT = _cachalot_settings["CACHALOT_TIMEOUT"]
+CACHALOT_QUERY_KEYGEN = _cachalot_settings["CACHALOT_QUERY_KEYGEN"]
+CACHALOT_TABLE_KEYGEN = _cachalot_settings["CACHALOT_TABLE_KEYGEN"]
+CACHALOT_FINAL_SQL_CHECK = _cachalot_settings["CACHALOT_FINAL_SQL_CHECK"]
+
+
+# Django default & Cachalot cache configuration
+_CACHE_BACKEND = os.environ.get(
+    "PAPERLESS_CACHE_BACKEND",
+    "django.core.cache.backends.locmem.LocMemCache"
+    if DEBUG
+    else "django.core.cache.backends.redis.RedisCache",
+)
+
+
+def _parse_caches():
+    return {
+        "default": {
+            "BACKEND": _CACHE_BACKEND,
+            "LOCATION": _CHANNELS_REDIS_URL,
+            "KEY_PREFIX": _REDIS_KEY_PREFIX,
+        },
+        "read-cache": {
+            "BACKEND": _CACHE_BACKEND,
+            "LOCATION": _parse_cachalot_settings()["CACHALOT_REDIS_URL"],
+            "KEY_PREFIX": _REDIS_KEY_PREFIX,
+        },
+    }
+
+
+CACHES = _parse_caches()
+
+
+del _cachalot_settings
 
 
 def default_threads_per_worker(task_workers) -> int:
