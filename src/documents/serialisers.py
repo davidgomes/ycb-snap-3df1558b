@@ -497,8 +497,10 @@ class StoragePathField(serializers.PrimaryKeyRelatedField):
 
 def get_api_version(context) -> int:
     request = context.get("request") if context else None
-    version = getattr(request, "version", None) if request else None
-    return int(version or settings.REST_FRAMEWORK["DEFAULT_VERSION"])
+    try:
+        return int(request.version)
+    except (AttributeError, TypeError, ValueError):
+        return int(settings.REST_FRAMEWORK["DEFAULT_VERSION"])
 
 
 class CustomFieldSerializer(serializers.ModelSerializer):
