@@ -333,7 +333,18 @@ def merge(
     for doc_id in doc_ids:
         doc = qs.get(id=doc_id)
         try:
-            with pikepdf.open(str(doc.source_path)) as pdf:
+            # Non-PDF originals still have a PDF archive when conversion succeeded.
+            # Opening the original (Office, image, etc.) fails and drops the document.
+            if doc.mime_type == "application/pdf":
+                doc_path = doc.source_path
+            elif doc.has_archive_version and doc.archive_path is not None:
+                doc_path = doc.archive_path
+            else:
+                logger.warning(
+                    f"Document {doc.id} is not a PDF and has no archive version, it will not be included in the merge",
+                )
+                continue
+            with pikepdf.open(str(doc_path)) as pdf:
                 version = max(version, pdf.pdf_version)
                 merged_pdf.pages.extend(pdf.pages)
             affected_docs.append(doc.id)
