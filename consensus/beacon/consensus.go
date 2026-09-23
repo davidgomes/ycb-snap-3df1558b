@@ -247,6 +247,13 @@ func (beacon *Beacon) verifyHeader(chain consensus.ChainHeaderReader, header, pa
 	if len(header.Extra) > int(params.MaximumExtraDataSize) {
 		return fmt.Errorf("extra-data longer than 32 bytes (%d)", len(header.Extra))
 	}
+	// Optimism Holocene/Jovian blocks must carry the fork's extraData encoding.
+	// Pre-Holocene blocks, including genesis, keep their existing extraData rules.
+	if chain.Config().IsOptimism() && chain.Config().IsHolocene(header.Time) {
+		if err := eip1559.ValidateOptimismExtraData(chain.Config(), header.Time, header.Extra); err != nil {
+			return fmt.Errorf("invalid optimism extraData: %w", err)
+		}
+	}
 	// Verify the seal parts. Ensure the nonce and uncle hash are the expected value.
 	if header.Nonce != beaconNonce {
 		return errInvalidNonce

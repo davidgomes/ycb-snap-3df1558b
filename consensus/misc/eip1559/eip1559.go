@@ -120,13 +120,117 @@ func ValidateHolocene1559Params(params []byte) error {
 	return nil
 }
 
+const (
+	// HoloceneExtraDataVersionByte is the version byte for Holocene extraData.
+	HoloceneExtraDataVersionByte = uint8(0x00)
+	// JovianExtraDataVersionByte is the version byte for Jovian extraData, which
+	// appends an 8-byte minimum base fee to the Holocene encoding.
+	JovianExtraDataVersionByte = uint8(0x01)
+)
+
+// ForkChecker reports whether Holocene and Jovian are active at a timestamp.
+// *params.ChainConfig implements this.
+type ForkChecker interface {
+	IsHolocene(time uint64) bool
+	IsJovian(time uint64) bool
+}
+
+// ValidateOptimismExtraData validates header extraData for the active Optimism fork.
+func ValidateOptimismExtraData(fc ForkChecker, time uint64, extraData []byte) error {
+	if fc.IsJovian(time) {
+		return ValidateJovianExtraData(extraData)
+	} else if fc.IsHolocene(time) {
+		return ValidateHoloceneExtraData(extraData)
+	} else if len(extraData) > 0 { // pre-Holocene
+		return errors.New("extraData must be empty before Holocene")
+	}
+	return nil
+}
+
+// DecodeOptimismExtraData decodes EIP-1559 parameters and, when Jovian is active,
+// the minimum base fee from header extraData. The extraData is expected to have
+// already been validated.
+func DecodeOptimismExtraData(fc ForkChecker, time uint64, extraData []byte) (uint64, uint64, *uint64) {
+	if fc.IsJovian(time) {
+		return DecodeJovianExtraData(extraData)
+	} else if fc.IsHolocene(time) {
+		denominator, elasticity := DecodeHoloceneExtraData(extraData)
+		return denominator, elasticity, nil
+	}
+	return 0, 0, nil
+}
+
+// EncodeOptimismExtraData encodes header extraData for the active Optimism fork.
+func EncodeOptimismExtraData(fc ForkChecker, time uint64, denominator, elasticity uint64, minBaseFee *uint64) []byte {
+	if fc.IsJovian(time) {
+		if minBaseFee == nil {
+			panic("minBaseFee cannot be nil since the Jovian upgrade is enabled")
+		}
+		return EncodeJovianExtraData(denominator, elasticity, *minBaseFee)
+	} else if fc.IsHolocene(time) {
+		return EncodeHoloceneExtraData(denominator, elasticity)
+	}
+	return nil
+}
+
+// DecodeJovianExtraData decodes the Jovian extraData parameters.
+// Returns 0,0,nil if the format is invalid, and denominator, elasticity, nil for
+// the Holocene length so pre-Jovian history can still be decoded.
+func DecodeJovianExtraData(extra []byte) (uint64, uint64, *uint64) {
+	if len(extra) == 9 {
+		denominator, elasticity := DecodeHolocene1559Params(extra[1:9])
+		return denominator, elasticity, nil
+	} else if len(extra) == 17 {
+		denominator, elasticity := DecodeHolocene1559Params(extra[1:9])
+		minBaseFee := binary.BigEndian.Uint64(extra[9:])
+		return denominator, elasticity, &minBaseFee
+	}
+	return 0, 0, nil
+}
+
+// EncodeJovianExtraData encodes the EIP-1559 parameters and minimum base fee into
+// the 17-byte header extraData format. Panics if EIP-1559 parameters are outside uint32 range.
+func EncodeJovianExtraData(denom, elasticity, minBaseFee uint64) []byte {
+	r := make([]byte, 17)
+	if denom > gomath.MaxUint32 || elasticity > gomath.MaxUint32 {
+		panic("eip-1559 parameters out of uint32 range")
+	}
+	r[0] = JovianExtraDataVersionByte
+	binary.BigEndian.PutUint32(r[1:5], uint32(denom))
+	binary.BigEndian.PutUint32(r[5:9], uint32(elasticity))
+	binary.BigEndian.PutUint64(r[9:], minBaseFee)
+	return r
+}
+
+// ValidateJovianExtraData checks that header extraData uses the Jovian 17-byte format.
+// The Holocene 9-byte encoding is rejected.
+func ValidateJovianExtraData(extra []byte) error {
+	if len(extra) != 17 {
+		return fmt.Errorf("Jovian extraData should be 17 bytes, got %d", len(extra))
+	}
+	if extra[0] != JovianExtraDataVersionByte {
+		return fmt.Errorf("Jovian extraData version byte should be %d, got %d", JovianExtraDataVersionByte, extra[0])
+	}
+	if err := ValidateHolocene1559Params(extra[1:9]); err != nil {
+		return err
+	}
+	denominator, elasticity := DecodeHolocene1559Params(extra[1:9])
+	if denominator == 0 {
+		return errors.New("holocene extraData must encode a non-zero denominator")
+	}
+	if elasticity == 0 {
+		return errors.New("holocene extraData must encode a non-zero elasticity")
+	}
+	return nil
+}
+
 // ValidateHoloceneExtraData checks if the header extraData is valid according to the Holocene
 // upgrade.
 func ValidateHoloceneExtraData(extra []byte) error {
 	if len(extra) != 9 {
 		return fmt.Errorf("holocene extraData should be 9 bytes, got %d", len(extra))
 	}
-	if extra[0] != 0 {
+	if extra[0] != HoloceneExtraDataVersionByte {
 		return fmt.Errorf("holocene extraData should have 0 version byte, got %d", extra[0])
 	}
 	return ValidateHolocene1559Params(extra[1:])
@@ -141,17 +245,20 @@ func CalcBaseFee(config *params.ChainConfig, parent *types.Header, time uint64) 
 	}
 	elasticity := config.ElasticityMultiplier()
 	denominator := config.BaseFeeChangeDenominator(time)
+	var minBaseFee *uint64
 	if config.IsHolocene(parent.Time) {
-		denominator, elasticity = DecodeHoloceneExtraData(parent.Extra)
-		if denominator == 0 {
+		var decodedDenom, decodedElasticity uint64
+		decodedDenom, decodedElasticity, minBaseFee = DecodeOptimismExtraData(config, parent.Time, parent.Extra)
+		if decodedDenom == 0 {
 			// this shouldn't happen as the ExtraData should have been validated prior
 			panic("invalid eip-1559 params in extradata")
 		}
+		denominator, elasticity = decodedDenom, decodedElasticity
 	}
 	parentGasTarget := parent.GasLimit / elasticity
 	// If the parent gasUsed is the same as the target, the baseFee remains unchanged.
 	if parent.GasUsed == parentGasTarget {
-		return new(big.Int).Set(parent.BaseFee)
+		return applyMinBaseFee(new(big.Int).Set(parent.BaseFee), minBaseFee)
 	}
 
 	var (
@@ -167,9 +274,9 @@ func CalcBaseFee(config *params.ChainConfig, parent *types.Header, time uint64) 
 		num.Div(num, denom.SetUint64(parentGasTarget))
 		num.Div(num, denom.SetUint64(denominator))
 		if num.Cmp(common.Big1) < 0 {
-			return num.Add(parent.BaseFee, common.Big1)
+			return applyMinBaseFee(num.Add(parent.BaseFee, common.Big1), minBaseFee)
 		}
-		return num.Add(parent.BaseFee, num)
+		return applyMinBaseFee(num.Add(parent.BaseFee, num), minBaseFee)
 	} else {
 		// Otherwise if the parent block used less gas than its target, the baseFee should decrease.
 		// max(0, parentBaseFee * gasUsedDelta / parentGasTarget / baseFeeChangeDenominator)
@@ -182,6 +289,19 @@ func CalcBaseFee(config *params.ChainConfig, parent *types.Header, time uint64) 
 		if baseFee.Cmp(common.Big0) < 0 {
 			baseFee = common.Big0
 		}
+		return applyMinBaseFee(baseFee, minBaseFee)
+	}
+}
+
+// applyMinBaseFee raises baseFee to the Jovian minimum when one is configured.
+// A nil minimum leaves the computed fee unchanged, including a zero fee.
+func applyMinBaseFee(baseFee *big.Int, minBaseFee *uint64) *big.Int {
+	if minBaseFee == nil {
 		return baseFee
 	}
+	minBaseFeeBig := new(big.Int).SetUint64(*minBaseFee)
+	if baseFee.Cmp(minBaseFeeBig) < 0 {
+		return minBaseFeeBig
+	}
+	return baseFee
 }
