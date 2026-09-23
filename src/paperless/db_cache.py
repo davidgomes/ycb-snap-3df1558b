@@ -65,8 +65,9 @@ def invalidate_db_cache(*tables_or_models) -> None:
 
 def handle_cachalot_setting_changed(*, setting: str, **kwargs) -> None:
     """
-    Keeps cachalot in sync with the Django settings when they change at
-    runtime (e.g. override_settings), as cachalot only reads them on load
+    Keeps an already loaded cachalot in sync with the Django settings when they
+    change at runtime (e.g. override_settings), as cachalot only reads them on
+    load
     """
     if not setting.startswith("CACHALOT_"):
         return
@@ -74,6 +75,7 @@ def handle_cachalot_setting_changed(*, setting: str, **kwargs) -> None:
     if cachalot_settings_module is None:
         return
     cachalot_settings = cachalot_settings_module.cachalot_settings
-    # Only refresh the values: re-patching now could break an open atomic block
+    # Re-patching is required to apply CACHALOT_ENABLED.  An unpatched ORM is
+    # left alone: patching it inside an open atomic block would break cachalot.
     if cachalot_settings.patched:
-        cachalot_settings.load()
+        cachalot_settings.reload()
