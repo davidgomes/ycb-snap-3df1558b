@@ -1762,6 +1762,8 @@ class UiSettingsViewSerializer(serializers.ModelSerializer):
             "settings",
         ]
 
+    settings = serializers.DictField(required=False, allow_null=True)
+
     def validate_settings(self, settings):
         # we never save update checking backend setting
         if "update_checking" in settings:
