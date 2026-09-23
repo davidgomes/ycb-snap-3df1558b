@@ -22,6 +22,7 @@ from documents.models import Document
 from documents.models import DocumentType
 from documents.models import StoragePath
 from documents.tasks import empty_trash
+from documents.templating.filepath import localize_date
 from documents.tests.utils import DirectoriesMixin
 from documents.tests.utils import FileSystemAssertsMixin
 
@@ -1586,3 +1587,90 @@ class TestFilenameGeneration(DirectoriesMixin, TestCase):
                 generate_filename(doc),
                 Path("brussels-belgium/some-title-with-special-characters.pdf"),
             )
+
+
+class TestDateLocalization(DirectoriesMixin, TestCase):
+    TEST_DATE = datetime.date(2023, 10, 26)
+    TEST_DATETIME = datetime.datetime(
+        2023,
+        10,
+        26,
+        14,
+        30,
+        5,
+        tzinfo=datetime.timezone.utc,
+    )
+
+    def test_localize_date_formats_date(self):
+        cases = [
+            ("MMMM d, yyyy", "en_US", "October 26, 2023"),
+            ("dd.MM.yyyy", "de_DE", "26.10.2023"),
+            ("EEEE, d. MMMM yyyy", "de_DE", "Donnerstag, 26. Oktober 2023"),
+            ("EEEE d MMMM yyyy", "fr_FR", "jeudi 26 octobre 2023"),
+            ("MMMM", "es_ES", "octubre"),
+            ("EEEE", "it_IT", "giovedì"),
+            ("EEEE, MMM d, yyyy", "en_US", "Thursday, Oct 26, 2023"),
+            ("medium", "en_US", "Oct 26, 2023"),
+        ]
+        for fmt, locale, expected in cases:
+            with self.subTest(fmt=fmt, locale=locale):
+                self.assertEqual(localize_date(self.TEST_DATE, fmt, locale), expected)
+
+    def test_localize_date_formats_datetime(self):
+        self.assertEqual(
+            localize_date(
+                self.TEST_DATETIME,
+                "yyyy-MM-dd HH:mm:ss zzzz",
+                "en_US",
+            ),
+            "2023-10-26 14:30:05 Coordinated Universal Time",
+        )
+        self.assertEqual(
+            localize_date(self.TEST_DATETIME, "EEEE, d. MMMM yyyy HH:mm", "de_DE"),
+            "Donnerstag, 26. Oktober 2023 14:30",
+        )
+
+    def test_localize_date_raises_type_error_for_invalid_input(self):
+        for invalid_value in ["2023-10-26", 1698330605, None, [], {}]:
+            with self.subTest(value=invalid_value):
+                with self.assertRaisesMessage(
+                    TypeError,
+                    f"Unsupported type {type(invalid_value)}",
+                ):
+                    localize_date(invalid_value, "medium", "en_US")
+
+    def test_localize_date_raises_error_for_invalid_locale(self):
+        for locale in ["invalid_locale_code", "xx_XX", ""]:
+            with self.subTest(locale=locale):
+                with self.assertRaisesMessage(ValueError, "Invalid locale identifier"):
+                    localize_date(self.TEST_DATE, "medium", locale)
+
+    def test_localize_date_path_building(self):
+        doc = Document.objects.create(
+            title="My Document",
+            mime_type="application/pdf",
+            checksum="1",
+            created=self.TEST_DATE,
+        )
+        cases = [
+            (
+                "{{ document.created | localize_date('EEEE, d. MMMM yyyy', 'de_DE') }}/{{ title }}",
+                "Donnerstag, 26. Oktober 2023/My Document.pdf",
+            ),
+            (
+                "{{ document.created | localize_date('dd.MM.yyyy', 'de_DE') }}_{{ title }}",
+                "26.10.2023_My Document.pdf",
+            ),
+            (
+                "{{ document.created | localize_date('MMMM', 'es_ES') }}/{{ title }}",
+                "octubre/My Document.pdf",
+            ),
+            (
+                "{{ document.created | localize_date('MMMM d, yyyy', 'en_US') }}/{{ title }}",
+                "October 26, 2023/My Document.pdf",
+            ),
+        ]
+        for filename_format, expected in cases:
+            with self.subTest(filename_format=filename_format):
+                with override_settings(FILENAME_FORMAT=filename_format):
+                    self.assertEqual(generate_filename(doc), Path(expected))
