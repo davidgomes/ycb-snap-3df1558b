@@ -15,29 +15,25 @@ class TestPodmanCompose(unittest.TestCase, RunSubprocessMixin):
         # test if when using volumes type:bind with selinux:z option, container ackquires a
         # respective host:source:z mapping in CreateCommand list
         compose_path = os.path.join(test_path(), "selinux", "docker-compose.yml")
+        host_path = os.path.join(os.path.realpath(test_path()), "selinux", "host_test_text.txt")
         try:
-            # change working directory to where docker-compose.yml file is so that containers can
-            # directly access host source file for mounting from that working directory
-            subprocess.run(
-                [
-                    podman_compose_path(),
-                    "-f",
-                    compose_path,
-                    "up",
-                    "-d",
-                    "container1",
-                    "container2",
-                ],
-                cwd=os.path.join(test_path(), 'selinux'),
-            )
+            subprocess.run([
+                podman_compose_path(),
+                "-f",
+                compose_path,
+                "up",
+                "-d",
+                "container1",
+                "container2",
+            ])
             out, _ = self.run_subprocess_assert_returncode([
                 "podman",
                 "inspect",
                 "selinux_container1_1",
             ])
             inspect_out = json.loads(out)
-            create_command_list = inspect_out[0].get("Config", []).get("CreateCommand", {})
-            self.assertIn('./host_test_text.txt:/test_text.txt:z', create_command_list)
+            create_command_list = inspect_out[0].get("Config", []).get("CreateCommand", [])
+            self.assertIn(f'{host_path}:/test_text.txt:z', create_command_list)
 
             out, _ = self.run_subprocess_assert_returncode([
                 "podman",
@@ -45,8 +41,8 @@ class TestPodmanCompose(unittest.TestCase, RunSubprocessMixin):
                 "selinux_container2_1",
             ])
             inspect_out = json.loads(out)
-            create_command_list = inspect_out[0].get("Config", []).get("CreateCommand", {})
-            self.assertIn('./host_test_text.txt:/test_text.txt', create_command_list)
+            create_command_list = inspect_out[0].get("Config", []).get("CreateCommand", [])
+            self.assertIn(f'{host_path}:/test_text.txt', create_command_list)
         finally:
             out, _ = self.run_subprocess_assert_returncode([
                 podman_compose_path(),

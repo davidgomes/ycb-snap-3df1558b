@@ -1,0 +1,1 @@
+Fixed relative host path resolution for volume bind mount source, which was resolved against the current working directory instead of the directory of the compose file.

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 
 import os
+import tempfile
 import unittest
 from typing import Any
 from unittest import mock
@@ -531,10 +532,24 @@ class TestContainerToArgs(unittest.IsolatedAsyncioTestCase):
         )
 
     @parameterized.expand([
-        (False, "z", ["--mount", "type=bind,source=./foo,destination=/mnt,z"]),
-        (False, "Z", ["--mount", "type=bind,source=./foo,destination=/mnt,Z"]),
-        (True, "z", ["-v", "./foo:/mnt:z"]),
-        (True, "Z", ["-v", "./foo:/mnt:Z"]),
+        (
+            False,
+            "z",
+            [
+                "--mount",
+                f"type=bind,source={get_test_file_path('test_dirname/foo')},destination=/mnt,z",
+            ],
+        ),
+        (
+            False,
+            "Z",
+            [
+                "--mount",
+                f"type=bind,source={get_test_file_path('test_dirname/foo')},destination=/mnt,Z",
+            ],
+        ),
+        (True, "z", ["-v", f"{get_test_file_path('test_dirname/foo')}:/mnt:z"]),
+        (True, "Z", ["-v", f"{get_test_file_path('test_dirname/foo')}:/mnt:Z"]),
     ])
     async def test_selinux_volume(
         self, prefer_volume: bool, selinux_type: str, expected_additional_args: list
@@ -570,6 +585,88 @@ class TestContainerToArgs(unittest.IsolatedAsyncioTestCase):
                 "busybox",
             ],
         )
+
+    @parameterized.expand([
+        ("absolute_path_mount", False, "{project_dir}/foo", "{project_dir}/foo"),
+        ("relative_path_mount", False, "./foo", "{project_dir}/foo"),
+        ("relative_dotdot_path_mount", False, "./bar/../foo", "{project_dir}/foo"),
+        ("home_dir_mount", False, "~/foo", "{home_dir}/foo"),
+        ("absolute_path_volume", True, "{project_dir}/foo", "{project_dir}/foo"),
+        ("relative_path_volume", True, "./foo", "{project_dir}/foo"),
+        ("home_dir_volume", True, "~/foo", "{home_dir}/foo"),
+    ])
+    async def test_volumes_bind_mount_source(
+        self, name: str, prefer_volume: bool, mount_source: str, expected_source: str
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_dir = os.path.join(os.path.realpath(tmp_dir), "project")
+            home_dir = os.path.join(os.path.realpath(tmp_dir), "home")
+            os.mkdir(project_dir)
+            os.mkdir(home_dir)
+            paths = {"project_dir": project_dir, "home_dir": home_dir}
+            c = create_compose_mock()
+            c.dirname = project_dir
+            c.prefer_volume_over_mount = prefer_volume
+
+            cnt = get_minimal_container()
+            cnt["_service"] = cnt["service_name"]
+            cnt["volumes"] = [
+                {
+                    "type": "bind",
+                    "source": mount_source.format(**paths),
+                    "target": "/mnt",
+                }
+            ]
+
+            with mock.patch.dict(os.environ, {"HOME": home_dir}):
+                args = await container_to_args(c, cnt)
+
+            source = expected_source.format(**paths)
+            if prefer_volume:
+                expected_mount_args = ["-v", f"{source}:/mnt"]
+            else:
+                expected_mount_args = ["--mount", f"type=bind,source={source},destination=/mnt"]
+            self.assertEqual(
+                args,
+                [
+                    "--name=project_name_service_name1",
+                    "-d",
+                    *expected_mount_args,
+                    "--network=bridge:alias=service_name",
+                    "busybox",
+                ],
+            )
+            self.assertTrue(os.path.isdir(source))
+
+    async def test_volumes_bind_mount_source_symlink_not_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as project_dir:
+            project_dir = os.path.realpath(project_dir)
+            os.mkdir(os.path.join(project_dir, "real"))
+            os.symlink("real", os.path.join(project_dir, "link"))
+            c = create_compose_mock()
+            c.dirname = project_dir
+
+            cnt = get_minimal_container()
+            cnt["_service"] = cnt["service_name"]
+            cnt["volumes"] = [
+                {"type": "bind", "source": "./link", "target": "/mnt"},
+                "./link:/mnt2",
+            ]
+
+            args = await container_to_args(c, cnt)
+            self.assertEqual(
+                args,
+                [
+                    "--name=project_name_service_name1",
+                    "-d",
+                    "--mount",
+                    f"type=bind,source={project_dir}/link,destination=/mnt",
+                    "--mount",
+                    f"type=bind,source={project_dir}/link,destination=/mnt2",
+                    "--network=bridge:alias=service_name",
+                    "busybox",
+                ],
+            )
 
     @parameterized.expand([
         ("not_compat", False, "test_project_name", "test_project_name_network1"),

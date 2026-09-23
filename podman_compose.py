@@ -415,12 +415,15 @@ async def assert_volume(compose: PodmanCompose, mount_dict: dict[str, Any]) -> N
     if mount_dict["type"] == "bind":
         basedir = os.path.realpath(compose.dirname)
         mount_src = mount_dict["source"]
-        mount_src = os.path.realpath(os.path.join(basedir, os.path.expanduser(mount_src)))
+        mount_src = os.path.abspath(os.path.join(basedir, os.path.expanduser(mount_src)))
         if not os.path.exists(mount_src):
             try:
                 os.makedirs(mount_src, exist_ok=True)
             except OSError:
                 pass
+        # same exemption as parse_short_mount: on Windows, socket paths refer to the podman VM
+        if os.name != 'nt' or ".sock" not in mount_dict["source"]:
+            mount_dict["source"] = mount_src
         return
     if mount_dict["type"] != "volume" or not vol or not vol.get("name"):
         return
