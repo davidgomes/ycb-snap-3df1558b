@@ -27,6 +27,9 @@ type SessionInfo struct {
 	/// validators.
 	ValidatorGroups [][]parachaintypes.AuthorityDiscoveryID
 
+	/// Authority discovery keys of all validators in the session, indexed by validator index.
+	DiscoveryKeys []parachaintypes.AuthorityDiscoveryID
+
 	/// Information about ourselves:
 	OurIndex parachaintypes.ValidatorIndex
 
@@ -142,6 +145,7 @@ func (c *LRUSessionCache) GetSessionInfo(
 	cachedSessionInfo := &SessionInfo{
 		SessionIndex:    sessionIndex,
 		ValidatorGroups: validatorGroups,
+		DiscoveryKeys:   sessionInfo.DiscoveryKeys,
 		OurIndex:        ourIndex,
 		OurGroup:        c.getOurGroup(ourIndex, sessionInfo.ValidatorGroups),
 		NodeFeatures:    nodeFeatures,

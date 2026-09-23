@@ -99,6 +99,7 @@ type AvailabilityDistributionMessageFetchPoV struct {
 	// PovHash is the expected hash of the PoV; a PoV not matching this hash will be rejected.
 	PovHash common.Hash
 	// PovCh is the channel for receiving the result of this fetch.
-	// The channel will be closed if the fetching fails for some reason.
+	// If the fetching fails for some reason, the result contains an error wrapping ErrFetchPoV.
+	// The channel is closed after the result has been sent.
 	PovCh chan OverseerFuncRes[PoV]
 }

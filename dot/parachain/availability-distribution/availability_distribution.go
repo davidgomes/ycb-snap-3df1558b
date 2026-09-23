@@ -268,10 +268,20 @@ func (ad *AvailabilityDistribution) ProcessBlockFinalizedSignal(_ parachaintypes
 	return nil // nothing to do
 }
 
+// processAvailabilityDistributionMessageFetchPoV starts fetching the requested PoV from the given validator. The
+// result, or an error wrapping parachaintypes.ErrFetchPoV, is delivered on msg.PovCh.
 func (ad *AvailabilityDistribution) processAvailabilityDistributionMessageFetchPoV(
 	msg parachaintypes.AvailabilityDistributionMessageFetchPoV,
 ) error {
-	return nil // TODO: implement #4489
+	authorityID, err := ad.getAuthorityDiscoveryID(msg.RelayParent, msg.FromValidator)
+	if err != nil {
+		go sendPoVResult(msg.PovCh, povResult{Err: fmt.Errorf("%w: %w", parachaintypes.ErrFetchPoV, err)})
+		return fmt.Errorf("fetching PoV for candidate %s of para %d from validator %d: %w",
+			msg.CandidateHash, msg.ParaID, msg.FromValidator, err)
+	}
+
+	go fetchPoV(ad.subSystemToOverseer, authorityID, msg)
+	return nil
 }
 
 func (ad *AvailabilityDistribution) handleChunkFetchingRequest(
