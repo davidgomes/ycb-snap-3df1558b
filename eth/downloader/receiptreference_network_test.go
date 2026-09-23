@@ -60,8 +60,12 @@ func deliverReceipts[T any, PT interface {
 
 func TestCorrectReceiptsFromNetwork(t *testing.T) {
 	protocols := map[string]func(*testing.T, types.Receipts) rlp.RawValue{
-		"eth68": func(t *testing.T, rs types.Receipts) rlp.RawValue { return deliverReceipts(t, eth.NewReceiptList68(rs)) },
-		"eth69": func(t *testing.T, rs types.Receipts) rlp.RawValue { return deliverReceipts(t, eth.NewReceiptList69(rs)) },
+		"eth68": func(t *testing.T, rs types.Receipts) rlp.RawValue {
+			return deliverReceipts(t, eth.NewReceiptList68(rs))
+		},
+		"eth69": func(t *testing.T, rs types.Receipts) rlp.RawValue {
+			return deliverReceipts(t, eth.NewReceiptList69(rs))
+		},
 	}
 	for name, deliver := range protocols {
 		t.Run(name, func(t *testing.T) {
