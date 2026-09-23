@@ -2057,6 +2057,28 @@ class PodmanCompose:
         if isinstance(retcode, int):
             sys.exit(retcode)
 
+    X_PODMAN_BOOL_KEYS = (
+        "docker_compose_compat",
+        "default_net_name_compat",
+        "default_net_behavior_compat",
+        "name_separator_compat",
+    )
+    X_PODMAN_KNOWN_KEYS = X_PODMAN_BOOL_KEYS + ("in_pod", "pod_args")
+
+    def _parse_x_podman_settings(self, compose: dict[str, Any], environ: dict[str, str]) -> None:
+        x_podman = dict(compose.get("x-podman", None) or {})
+        for key in self.X_PODMAN_KNOWN_KEYS:
+            env_key = "PODMAN_COMPOSE_" + key.upper()
+            if env_key not in environ:
+                continue
+            value: Any = environ[env_key]
+            if key in self.X_PODMAN_BOOL_KEYS:
+                value = str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+            elif key == "pod_args":
+                value = shlex.split(value)
+            x_podman[key] = value
+        self.x_podman = x_podman
+
     def resolve_in_pod(self) -> bool:
         if self.global_args.in_pod in (None, ''):
             self.global_args.in_pod = self.x_podman.get("in_pod", "1")
@@ -2236,7 +2258,8 @@ class PodmanCompose:
             nets["default"] = None
 
         self.networks = nets
-        if compose.get("x-podman", {}).get("default_net_behavior_compat", False):
+        self._parse_x_podman_settings(compose, self.environ)
+        if self.x_podman.get("default_net_behavior_compat", False):
             # If there is no network_mode and networks in service,
             # docker-compose will create default network named '<project_name>_default'
             # and add the service to the default network.
@@ -2353,7 +2376,7 @@ class PodmanCompose:
         given_containers.sort(key=lambda c: len(c.get("_deps", [])))
         # log("sorted:", [c["name"] for c in given_containers])
 
-        self.x_podman = compose.get("x-podman", {})
+        self._parse_x_podman_settings(compose, self.environ)
 
         args.in_pod = self.resolve_in_pod()
         args.pod_arg_list = self.resolve_pod_args()
