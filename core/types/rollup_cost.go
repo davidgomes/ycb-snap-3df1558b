@@ -19,6 +19,7 @@ package types
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -41,6 +42,15 @@ const (
 	// array. baseFeeScalar is in the first four bytes of the segment, blobBaseFeeScalar the next
 	// four.
 	scalarSectionStart = 32 - BaseFeeScalarSlotOffset - 4
+
+	// IsthmusL1AttributesLen is the length of the Isthmus L1 attributes deposit transaction calldata.
+	IsthmusL1AttributesLen = 176
+	// JovianL1AttributesLen is the length of the Jovian L1 attributes deposit transaction calldata.
+	JovianL1AttributesLen = 178
+
+	// DAFootprintGasScalarDefault is the DA footprint gas scalar that applies to Jovian blocks
+	// whose L1 attributes don't configure a non-zero scalar.
+	DAFootprintGasScalarDefault = 400
 )
 
 func init() {
@@ -57,6 +67,8 @@ var (
 	EcotoneL1AttributesSelector = []byte{0x44, 0x0a, 0x5e, 0x20}
 	// IsthmusL1AttributesSelector is the selector indicating Isthmus style L1 gas attributes.
 	IsthmusL1AttributesSelector = []byte{0x09, 0x89, 0x99, 0xbe}
+	// JovianL1AttributesSelector is the selector indicating Jovian style L1 gas attributes.
+	JovianL1AttributesSelector = []byte{0x3d, 0xb6, 0xbe, 0x2b}
 
 	// L1BlockAddr is the address of the L1Block contract which stores the L1 gas attributes.
 	L1BlockAddr = common.HexToAddress("0x4200000000000000000000000000000000000015")
@@ -478,8 +490,8 @@ func extractL1GasParamsPostIsthmus(data []byte) (gasParams, error) {
 	// Isthmus expects exactly 176, while subsequent forks like Jovian expect more. All of these
 	// forks use the same gas params, so we use the relaxed `< 176` constraint instead of the more
 	// stringent `!= 176`.
-	if len(data) < 176 {
-		return gasParams{}, fmt.Errorf("expected at least 176 L1 info bytes, got %d", len(data))
+	if len(data) < IsthmusL1AttributesLen {
+		return gasParams{}, fmt.Errorf("expected at least %d L1 info bytes, got %d", IsthmusL1AttributesLen, len(data))
 	}
 	// data layout assumed for post-Isthmus:
 	// offset type varname
@@ -510,6 +522,70 @@ func extractL1GasParamsPostIsthmus(data []byte) (gasParams, error) {
 		operatorFeeScalar:   &operatorFeeScalar,
 		operatorFeeConstant: &operatorFeeConstant,
 	}, nil
+}
+
+// ExtractDAFootprintGasScalar extracts the DA footprint gas scalar from the calldata of a Jovian
+// L1 attributes deposit transaction.
+func ExtractDAFootprintGasScalar(data []byte) (uint16, error) {
+	if len(data) < 4 || !bytes.Equal(data[:4], JovianL1AttributesSelector) {
+		return 0, errors.New("L1 attributes transaction data does not have the Jovian selector")
+	}
+	if len(data) != JovianL1AttributesLen {
+		return 0, fmt.Errorf("expected %d Jovian L1 info bytes, got %d", JovianL1AttributesLen, len(data))
+	}
+	// data layout assumed for Jovian:
+	// offset type varname
+	// 0-175 <post-Isthmus layout>
+	// 176   uint16  _daFootprintGasScalar
+	return binary.BigEndian.Uint16(data[IsthmusL1AttributesLen:JovianL1AttributesLen]), nil
+}
+
+// DAFootprintGasScalar returns the DA footprint gas scalar of a Jovian block with the given
+// transactions. It is read from the L1 attributes deposit transaction, which is the block's first
+// transaction. DAFootprintGasScalarDefault is returned if the scalar is zero or if the block has no
+// Jovian L1 attributes, e.g. because it is the Jovian activation block, whose L1 attributes still
+// use the Isthmus format.
+func DAFootprintGasScalar(txs []*Transaction) (uint16, error) {
+	if len(txs) == 0 || !txs[0].IsDepositTx() {
+		return DAFootprintGasScalarDefault, nil
+	}
+	data := txs[0].Data()
+	if len(data) < 4 || !bytes.Equal(data[:4], JovianL1AttributesSelector) {
+		return DAFootprintGasScalarDefault, nil
+	}
+	scalar, err := ExtractDAFootprintGasScalar(data)
+	if err != nil {
+		return 0, err
+	}
+	if scalar == 0 {
+		return DAFootprintGasScalarDefault, nil
+	}
+	return scalar, nil
+}
+
+// DAFootprint returns the DA footprint of the transaction, which is its estimated DA usage in
+// bytes scaled into the gas dimension by the DA footprint gas scalar. Deposit transactions don't
+// have a DA footprint.
+func (tx *Transaction) DAFootprint(daFootprintGasScalar uint16) uint64 {
+	if tx.IsDepositTx() {
+		return 0
+	}
+	return tx.RollupCostData().EstimatedDASize().Uint64() * uint64(daFootprintGasScalar)
+}
+
+// CalcDAFootprint calculates the total DA footprint of a Jovian block with the given transactions.
+// Since Jovian, the DA footprint of a block must not exceed its gas limit and the block's gas used
+// is the maximum of the total gas used by its transactions and its DA footprint.
+func CalcDAFootprint(txs []*Transaction) (uint64, error) {
+	scalar, err := DAFootprintGasScalar(txs)
+	if err != nil {
+		return 0, err
+	}
+	var daFootprint uint64
+	for _, tx := range txs {
+		daFootprint += tx.DAFootprint(scalar)
+	}
+	return daFootprint, nil
 }
 
 // L1Cost computes the the data availability fee for transactions in blocks prior to the Ecotone

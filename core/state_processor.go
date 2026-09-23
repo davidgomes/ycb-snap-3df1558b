@@ -105,6 +105,11 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		allLogs = append(allLogs, receipt.Logs...)
 	}
 
+	gasUsed, err := blockGasUsed(p.config, header, block.Transactions(), *usedGas)
+	if err != nil {
+		return nil, err
+	}
+
 	isIsthmus := p.config.IsIsthmus(block.Time())
 
 	// Read requests if Prague is enabled.
@@ -136,8 +141,25 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		Receipts: receipts,
 		Requests: requests,
 		Logs:     allLogs,
-		GasUsed:  *usedGas,
+		GasUsed:  gasUsed,
 	}, nil
+}
+
+// blockGasUsed returns the gas used by a block, given the total gas used by its transactions.
+// Since Jovian, a block's gas used is the maximum of its transactions' gas used and its DA
+// footprint, and the DA footprint must not exceed the block gas limit.
+func blockGasUsed(config *params.ChainConfig, header *types.Header, txs []*types.Transaction, txGasUsed uint64) (uint64, error) {
+	if !config.IsDAFootprintBlockLimit(header.Time) {
+		return txGasUsed, nil
+	}
+	daFootprint, err := types.CalcDAFootprint(txs)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate DA footprint: %w", err)
+	}
+	if daFootprint > header.GasLimit {
+		return 0, fmt.Errorf("%w: DA footprint %d, gas limit %d", ErrDAFootprintLimitExceeded, daFootprint, header.GasLimit)
+	}
+	return max(txGasUsed, daFootprint), nil
 }
 
 // ApplyTransactionWithEVM attempts to apply a transaction to the given state database

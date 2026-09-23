@@ -415,6 +415,12 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 			gen(i, b)
 		}
 
+		gasUsed, err := blockGasUsed(config, b.header, b.txs, b.header.GasUsed)
+		if err != nil {
+			panic(err)
+		}
+		b.header.GasUsed = gasUsed
+
 		requests := b.collectRequests(false)
 		if requests != nil {
 			reqHash := types.CalcRequestsHash(requests)

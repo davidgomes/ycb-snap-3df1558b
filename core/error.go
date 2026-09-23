@@ -152,4 +152,8 @@ var (
 
 	// ErrSystemTxNotSupported is returned for any deposit tx with IsSystemTx=true after the Regolith fork
 	ErrSystemTxNotSupported = errors.New("system tx not supported")
+
+	// ErrDAFootprintLimitExceeded is returned if the DA footprint of a block's transactions
+	// exceeds the block gas limit (Jovian).
+	ErrDAFootprintLimitExceeded = errors.New("DA footprint exceeds block gas limit")
 )
