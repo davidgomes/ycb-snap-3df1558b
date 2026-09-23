@@ -516,6 +516,22 @@ You can also use a custom `slugify` filter to slufigy text:
 {{ title | slugify }}
 ```
 
+You can use the `localize_date` filter to format a date or datetime according to a specific locale,
+translating month and weekday names. It takes a format and a locale identifier:
+
+```jinja
+{{ document.created | localize_date('EEEE, d. MMMM yyyy', 'de_DE') }}
+```
+
+For a document created on October 26, 2023, this renders `Donnerstag, 26. Oktober 2023`.
+
+The format can be a named style (`short`, `medium`, `long` or `full`) or a pattern using the
+[Unicode CLDR date field symbols](https://unicode.org/reports/tr35/tr35-dates.html#Date_Field_Symbol_Table)
+(for example `dd.MM.yyyy` or `MMM d, yyyy`); note that these differ from the `strftime` codes used by the `datetime` filter.
+The locale must be a valid identifier such as `en_US`, `fr_FR` or `es_ES`.
+Only date and datetime values (such as `document.created` or `document.added`) are supported; for
+datetimes, time and time zone patterns like `HH:mm zzzz` are also available.
+
 ## Automatic recovery of invalid PDFs {#pdf-recovery}
 
 Paperless will attempt to "clean" certain invalid PDFs with `qpdf` before processing if, for example, the mime_type
