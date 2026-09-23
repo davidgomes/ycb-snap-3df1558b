@@ -130,6 +130,7 @@ type generateParams struct {
 	txs           types.Transactions // Deposit transactions to include at the start of the block
 	gasLimit      *uint64            // Optional gas limit override
 	eip1559Params []byte             // Optional EIP-1559 parameters
+	minBaseFee    *uint64            // Optional minimum base fee, required once Jovian is active
 	interrupt     *atomic.Int32      // Optional interruption signal to pass down to worker.generateWork
 	isUpdate      bool               // Optional flag indicating that this is building a discardable update
 
@@ -319,9 +320,15 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 			d = miner.chainConfig.BaseFeeChangeDenominator(header.Time)
 			e = miner.chainConfig.ElasticityMultiplier()
 		}
-		header.Extra = eip1559.EncodeHoloceneExtraData(d, e)
+		if miner.chainConfig.IsMinBaseFee(header.Time) && genParams.minBaseFee == nil {
+			return nil, errors.New("missing minBaseFee, required post-Jovian")
+		}
+		header.Extra = eip1559.EncodeOptimismExtraData(miner.chainConfig, header.Time, d, e, genParams.minBaseFee)
 	} else if genParams.eip1559Params != nil {
 		return nil, errors.New("got eip1559 params, expected none")
+	}
+	if !miner.chainConfig.IsMinBaseFee(header.Time) && genParams.minBaseFee != nil {
+		return nil, errors.New("got minBaseFee, expected none")
 	}
 	// Run the consensus preparation with the default or customized consensus engine.
 	// Note that the `header.Time` may be changed.

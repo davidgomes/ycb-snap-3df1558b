@@ -852,6 +852,12 @@ func (c *ChainConfig) IsJovian(time uint64) bool {
 	return isTimestampForked(c.JovianTime, time)
 }
 
+// IsMinBaseFee returns whether the configurable minimum base fee, introduced with the Jovian upgrade,
+// is active at the given time. When active, the header extraData carries the minimum base fee.
+func (c *ChainConfig) IsMinBaseFee(time uint64) bool {
+	return c.IsJovian(time)
+}
+
 func (c *ChainConfig) IsInterop(time uint64) bool {
 	return isTimestampForked(c.InteropTime, time)
 }
