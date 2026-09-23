@@ -421,6 +421,19 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 			b.header.RequestsHash = &reqHash
 		}
 
+		// OP-Stack addition: Jovian maxes the block.gasUsed with the DA footprint
+		if config.IsJovian(b.header.Time) {
+			var daFootprint uint64
+			for _, tx := range b.txs {
+				if tx.Type() != types.DepositTxType {
+					daFootprint += tx.RollupCostData().EstimatedDASize().Uint64() * params.DAFootprintGasScalar
+				}
+			}
+			if b.header.GasUsed < daFootprint {
+				b.header.GasUsed = daFootprint
+			}
+		}
+
 		body := types.Body{Transactions: b.txs, Uncles: b.uncles, Withdrawals: b.withdrawals}
 		block, err := b.engine.FinalizeAndAssemble(cm, b.header, statedb, &body, b.receipts)
 		if err != nil {
