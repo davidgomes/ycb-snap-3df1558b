@@ -4,6 +4,11 @@
 # Required services
 
 #PAPERLESS_REDIS=redis://localhost:6379
+#PAPERLESS_REDIS_PREFIX=
+# Optional Redis cache of database read queries. Disabled by default.
+#PAPERLESS_DB_READ_CACHE_ENABLED=false
+#PAPERLESS_READ_CACHE_TTL=3600
+#PAPERLESS_READ_CACHE_REDIS_URL=redis://localhost:6379
 #PAPERLESS_DBHOST=localhost
 #PAPERLESS_DBPORT=5432
 #PAPERLESS_DBNAME=paperless
