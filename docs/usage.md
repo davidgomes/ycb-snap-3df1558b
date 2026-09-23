@@ -499,6 +499,11 @@ The following workflow action types are available:
 -   Encoding for the request body, either JSON or form data
 -   The request headers as key-value pairs
 
+For security reasons, webhooks are not sent to internal addresses (e.g. `localhost` or
+other hosts on your local network) by default, redirects are not followed and a custom
+`Host` header is ignored. See the [webhook settings](configuration.md#webhooks) to
+allow internal requests or to restrict the permitted schemes and ports.
+
 #### Workflow placeholders
 
 Some workflow text can include placeholders but the available options differ depending on the type of
