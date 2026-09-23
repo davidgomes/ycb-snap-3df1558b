@@ -80,3 +80,22 @@ func (s *StatementFilter) MaskSeconded(mask parachaintypes.BitVec) {
 func (s *StatementFilter) MaskValid(mask parachaintypes.BitVec) {
 	s.validatedInGroup.Mask(mask)
 }
+
+// clone returns a deep copy of the StatementFilter. Copying the struct by value is not enough,
+// as the copy would share the underlying bits with the original.
+func (s *StatementFilter) clone() *StatementFilter {
+	secondedInGroup, err := parachaintypes.NewBitVec(s.secondedInGroup.Bits())
+	if err != nil {
+		panic("source bitvec is within the maximum allowed length. qed")
+	}
+
+	validatedInGroup, err := parachaintypes.NewBitVec(s.validatedInGroup.Bits())
+	if err != nil {
+		panic("source bitvec is within the maximum allowed length. qed")
+	}
+
+	return &StatementFilter{
+		secondedInGroup:  secondedInGroup,
+		validatedInGroup: validatedInGroup,
+	}
+}
