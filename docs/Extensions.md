@@ -208,3 +208,18 @@ x-podman:
 ```
 When not set in docker-compose.yml or on the command line, the pod args default
 to `["--infra=false", "--share="]`.
+
+## Overriding x-podman settings using environment variables
+
+Global `x-podman` settings can be overridden using `PODMAN_COMPOSE_*` environment variables
+(e.g. set in the shell or in the `.env` file). The variable name is the upper-cased setting name
+prefixed with `PODMAN_COMPOSE_`, and it takes precedence over the value in the compose file:
+
+```
+PODMAN_COMPOSE_IN_POD=0
+PODMAN_COMPOSE_POD_ARGS="--infra=false --share= --cpus=1"
+PODMAN_COMPOSE_DEFAULT_NET_NAME_COMPAT=1
+PODMAN_COMPOSE_DEFAULT_NET_BEHAVIOR_COMPAT=1
+```
+
+Command line arguments such as `--in-pod` and `--pod-args` still take precedence over both.
