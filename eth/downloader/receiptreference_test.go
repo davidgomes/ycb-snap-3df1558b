@@ -126,7 +126,7 @@ func TestCorrectReceiptsRLP(t *testing.T) {
 			nonces:   []uint64{},
 			txTypes:  []uint8{},
 			validate: func(originalRLP rlp.RawValue, correctedRLP rlp.RawValue) {
-				var original, corrected types.Receipts
+				var original, corrected []*types.ReceiptForStorage
 				assert.NoError(t, rlp.DecodeBytes(originalRLP, &original))
 				assert.NoError(t, rlp.DecodeBytes(correctedRLP, &corrected))
 				assert.Empty(t, corrected)
@@ -139,7 +139,7 @@ func TestCorrectReceiptsRLP(t *testing.T) {
 			nonces:   []uint64{1, 2, 3},
 			txTypes:  []uint8{1, 1, 1},
 			validate: func(originalRLP rlp.RawValue, correctedRLP rlp.RawValue) {
-				var original, corrected types.Receipts
+				var original, corrected []*types.ReceiptForStorage
 				assert.NoError(t, rlp.DecodeBytes(originalRLP, &original))
 				assert.NoError(t, rlp.DecodeBytes(correctedRLP, &corrected))
 				assert.Equal(t, original, corrected)
@@ -152,7 +152,7 @@ func TestCorrectReceiptsRLP(t *testing.T) {
 			nonces:   []uint64{78756, 78757, 78758, 78759, 78760, 78761, 78762, 78763, 78764},
 			txTypes:  []uint8{126, 126, 126, 126, 126, 126, 126, 126, 126},
 			validate: func(originalRLP rlp.RawValue, correctedRLP rlp.RawValue) {
-				var original, corrected types.Receipts
+				var original, corrected []*types.ReceiptForStorage
 				assert.NoError(t, rlp.DecodeBytes(originalRLP, &original))
 				assert.NoError(t, rlp.DecodeBytes(correctedRLP, &corrected))
 				assert.Equal(t, original, corrected)
@@ -165,7 +165,7 @@ func TestCorrectReceiptsRLP(t *testing.T) {
 			nonces:   []uint64{78756, 78757, 78758, 12345, 78760, 78761, 78762, 78763, 78764},
 			txTypes:  []uint8{126, 126, 126, 126, 126, 126, 126, 126, 126},
 			validate: func(originalRLP rlp.RawValue, correctedRLP rlp.RawValue) {
-				var original, corrected types.Receipts
+				var original, corrected []*types.ReceiptForStorage
 				assert.NoError(t, rlp.DecodeBytes(originalRLP, &original))
 				assert.NoError(t, rlp.DecodeBytes(correctedRLP, &corrected))
 				assert.NotEqual(t, original[3], corrected[3])
@@ -183,7 +183,7 @@ func TestCorrectReceiptsRLP(t *testing.T) {
 			nonces:   []uint64{0, 1, 2, 78759, 78760, 78761, 6, 78763, 78764, 9, 10, 11},
 			txTypes:  []uint8{126, 126, 126, 126, 126, 126, 126, 126, 126, 1, 1, 1},
 			validate: func(originalRLP rlp.RawValue, correctedRLP rlp.RawValue) {
-				var original, corrected types.Receipts
+				var original, corrected []*types.ReceiptForStorage
 				assert.NoError(t, rlp.DecodeBytes(originalRLP, &original))
 				assert.NoError(t, rlp.DecodeBytes(correctedRLP, &corrected))
 				// indexes 0, 1, 2, 6 were modified
@@ -207,11 +207,18 @@ func TestCorrectReceiptsRLP(t *testing.T) {
 		transactions := make(types.Transactions, len(tc.nonces))
 		for i := range tc.nonces {
 			receipts[i] = &types.Receipt{Type: tc.txTypes[i], DepositNonce: &tc.nonces[i]}
-			transactions[i] = types.NewTx(&types.DepositTx{})
+			if tc.txTypes[i] == types.DepositTxType {
+				transactions[i] = types.NewTx(&types.DepositTx{})
+			} else {
+				transactions[i] = types.NewTx(&types.AccessListTx{})
+			}
 		}
 
-		// Encode original receipts to RLP
-		originalRLP, err := rlp.EncodeToBytes(receipts)
+		storageReceipts := make([]*types.ReceiptForStorage, len(receipts))
+		for i, r := range receipts {
+			storageReceipts[i] = (*types.ReceiptForStorage)(r)
+		}
+		originalRLP, err := rlp.EncodeToBytes(storageReceipts)
 		assert.NoError(t, err)
 
 		// Call correctReceiptsRLP
