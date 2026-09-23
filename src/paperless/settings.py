@@ -903,18 +903,84 @@ CELERY_BEAT_SCHEDULE = _parse_beat_schedule()
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#beat-schedule-filename
 CELERY_BEAT_SCHEDULE_FILENAME = str(DATA_DIR / "celerybeat-schedule.db")
 
-# django setting.
-CACHES = {
-    "default": {
-        "BACKEND": os.environ.get(
-            "PAPERLESS_CACHE_BACKEND",
-            "django.core.cache.backends.redis.RedisCache",
-        ),
-        "LOCATION": _CHANNELS_REDIS_URL,
-        "KEY_PREFIX": os.getenv("PAPERLESS_REDIS_PREFIX", ""),
-    },
-}
+###############################################################################
+# Cache                                                                       #
+###############################################################################
 
+_READ_CACHE_DEFAULT_TTL: Final[int] = 60 * 60
+_READ_CACHE_MAX_TTL: Final[int] = 60 * 60 * 24 * 365
+
+
+def _parse_read_cache_ttl() -> int:
+    """
+    Parses PAPERLESS_READ_CACHE_TTL, in seconds.  Values which are not a
+    positive integer are ignored in favor of the default, and the value is
+    capped to one year.
+    """
+    try:
+        ttl = __get_int("PAPERLESS_READ_CACHE_TTL", _READ_CACHE_DEFAULT_TTL)
+    except ValueError:
+        return _READ_CACHE_DEFAULT_TTL
+    if ttl <= 0:
+        return _READ_CACHE_DEFAULT_TTL
+    return min(ttl, _READ_CACHE_MAX_TTL)
+
+
+def _parse_cachalot_settings() -> dict:
+    """
+    Parses the settings of the optional database read cache, which is
+    implemented with django-cachalot and stored in the "read-cache" cache.
+    """
+    _, read_cache_redis_url = _parse_redis_url(
+        os.getenv("PAPERLESS_READ_CACHE_REDIS_URL", os.getenv("PAPERLESS_REDIS")),
+    )
+    return {
+        "CACHALOT_ENABLED": __get_boolean("PAPERLESS_DB_READ_CACHE_ENABLED"),
+        "CACHALOT_CACHE": "read-cache",
+        "CACHALOT_TIMEOUT": _parse_read_cache_ttl(),
+        "CACHALOT_QUERY_KEYGEN": "paperless.db_cache.custom_get_query_cache_key",
+        "CACHALOT_TABLE_KEYGEN": "paperless.db_cache.custom_get_table_cache_key",
+        # Safety net for tables the ORM based detection may overlook
+        "CACHALOT_FINAL_SQL_CHECK": True,
+        "CACHALOT_REDIS_URL": read_cache_redis_url,
+    }
+
+
+def _parse_caches() -> dict[str, dict]:
+    _, redis_url = _parse_redis_url(os.getenv("PAPERLESS_REDIS", None))
+    backend = os.getenv(
+        "PAPERLESS_CACHE_BACKEND",
+        "django.core.cache.backends.redis.RedisCache",
+    )
+    key_prefix = os.getenv("PAPERLESS_REDIS_PREFIX", "")
+    return {
+        "default": {
+            "BACKEND": backend,
+            "LOCATION": redis_url,
+            "KEY_PREFIX": key_prefix,
+        },
+        "read-cache": {
+            "BACKEND": backend,
+            "LOCATION": _parse_cachalot_settings()["CACHALOT_REDIS_URL"],
+            "KEY_PREFIX": key_prefix,
+        },
+    }
+
+
+_cachalot_settings = _parse_cachalot_settings()
+CACHALOT_ENABLED: Final[bool] = _cachalot_settings["CACHALOT_ENABLED"]
+if CACHALOT_ENABLED:  # pragma: no cover
+    INSTALLED_APPS.append("cachalot")
+CACHALOT_CACHE: Final[str] = _cachalot_settings["CACHALOT_CACHE"]
+CACHALOT_TIMEOUT: Final[int] = _cachalot_settings["CACHALOT_TIMEOUT"]
+CACHALOT_QUERY_KEYGEN: Final[str] = _cachalot_settings["CACHALOT_QUERY_KEYGEN"]
+CACHALOT_TABLE_KEYGEN: Final[str] = _cachalot_settings["CACHALOT_TABLE_KEYGEN"]
+CACHALOT_FINAL_SQL_CHECK: Final[bool] = _cachalot_settings["CACHALOT_FINAL_SQL_CHECK"]
+
+CACHES = _parse_caches()
+
+# The read cache is left alone: it must be shared by the webserver and the
+# workers, otherwise their writes would not invalidate each other's cache
 if DEBUG and os.getenv("PAPERLESS_CACHE_BACKEND") is None:
     CACHES["default"]["BACKEND"] = (
         "django.core.cache.backends.locmem.LocMemCache"  # pragma: no cover
