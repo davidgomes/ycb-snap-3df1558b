@@ -1,0 +1,1 @@
+Fixed relative bind-mount host paths so they resolve from the compose file directory.
