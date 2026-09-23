@@ -510,6 +510,19 @@ Invoice_{{ custom_fields|get_cf_value("Select Field") }}_{{ custom_fields|get_cf
 
 This will create a path like `invoices/2022/01/01/Invoice_OptionTwo_20220101.pdf` if the custom field "Date Field" is set to January 1, 2022 and "Select Field" is set to `OptionTwo`.
 
+You can use the `localize_date` filter to format a date or datetime for a specific locale. The value has to be a real date or datetime, so use the document field itself (`document.created` or `document.added`). The format is either a Babel preset (`short`, `medium`, `long`, `full`) or a [custom pattern](https://unicode.org/reports/tr35/tr35-dates.html#Date_Format_Patterns). The locale is an identifier such as `en_US`, `de_DE`, `fr_FR`, `es_ES`, or `it_IT`. Timezone-aware datetimes include the zone when the pattern asks for one.
+
+```jinja
+{{ document.created | localize_date('long', 'en_US') }}
+{{ document.created | localize_date('medium', 'de_DE') }}
+{{ document.created | localize_date('EEEE, MMM d, yyyy', 'en_US') }}
+{{ document.created | localize_date('dd.MM.yyyy', 'de_DE') }}
+{{ document.added | localize_date("yyyy.MM.dd G 'at' HH:mm:ss zzz", 'en_US') }}
+{{ title }}_{{ document.created | localize_date('MMMM', 'es_ES') }}
+```
+
+For 26 October 2023 those patterns render `October 26, 2023`, `26.10.2023`, `Thursday, Oct 26, 2023`, and `26.10.2023`. Weekday and month names follow the locale: `Donnerstag` and `Oktober` in German, `jeudi` and `octobre` in French, `jueves` and `octubre` in Spanish, `giovedì` and `ottobre` in Italian. An invalid locale identifier, or a value that is not a date or datetime, raises an error and the filename falls back to the default.
+
 You can also use a custom `slugify` filter to slufigy text:
 
 ```jinja
