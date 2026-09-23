@@ -17,12 +17,15 @@
 package eip1559
 
 import (
+	"fmt"
 	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/stretchr/testify/require"
 )
 
 // copyConfig does a _shallow_ copy of a given config. Safe to set new values, but
@@ -68,6 +71,14 @@ func opConfig() *params.ChainConfig {
 		EIP1559Denominator:       50,
 		EIP1559DenominatorCanyon: &eip1559DenominatorCanyon,
 	}
+	return config
+}
+
+// jovianConfig extends opConfig with Jovian activated at time 14.
+func jovianConfig() *params.ChainConfig {
+	config := opConfig()
+	jt := uint64(14)
+	config.JovianTime = &jt
 	return config
 }
 
@@ -217,4 +228,204 @@ func TestCalcBaseFeeOptimismHolocene(t *testing.T) {
 			t.Errorf("test %d: have %d  want %d, ", i, have, want)
 		}
 	}
+}
+
+// TestCalcBaseFeeJovian tests that the minimum base fee from the parent header is enforced once
+// Jovian is active at the parent's timestamp, and that it is not enforced before.
+func TestCalcBaseFeeJovian(t *testing.T) {
+	const (
+		parentGasLimit  = uint64(30_000_000)
+		denom           = uint64(50)
+		elasticity      = uint64(3)
+		parentGasTarget = parentGasLimit / elasticity
+		preJovian       = uint64(12) // Holocene active
+		postJovian      = uint64(14)
+		minBaseFee      = uint64(1e9)
+	)
+
+	tests := []struct {
+		name            string
+		parentBaseFee   uint64
+		parentGasUsed   uint64
+		parentTime      uint64
+		parentExtra     []byte
+		expectedBaseFee uint64
+	}{
+		{
+			name:            "pre-Jovian parent is not clamped",
+			parentBaseFee:   1,
+			parentGasUsed:   parentGasTarget - 1_000_000,
+			parentTime:      preJovian,
+			parentExtra:     EncodeHoloceneExtraData(denom, elasticity),
+			expectedBaseFee: 1,
+		},
+		{
+			name:            "gas used at target is clamped",
+			parentBaseFee:   1,
+			parentGasUsed:   parentGasTarget,
+			parentTime:      postJovian,
+			parentExtra:     EncodeMinBaseFeeExtraData(denom, elasticity, minBaseFee),
+			expectedBaseFee: minBaseFee,
+		},
+		{
+			name:            "gas used above target is clamped",
+			parentBaseFee:   1,
+			parentGasUsed:   parentGasTarget + 1_000_000,
+			parentTime:      postJovian,
+			parentExtra:     EncodeMinBaseFeeExtraData(denom, elasticity, minBaseFee),
+			expectedBaseFee: minBaseFee,
+		},
+		{
+			// 2e9 + 2e9 * 10_000_000 / 10_000_000 / 50 = 2_040_000_000
+			name:            "gas used above target is not clamped when above minimum",
+			parentBaseFee:   2e9,
+			parentGasUsed:   parentGasTarget + 10_000_000,
+			parentTime:      postJovian,
+			parentExtra:     EncodeMinBaseFeeExtraData(denom, elasticity, minBaseFee),
+			expectedBaseFee: 2_040_000_000,
+		},
+		{
+			// 1e9 - 1e9 * 1_000_000 / 10_000_000 / 50 = 998_000_000
+			name:            "gas used below target is clamped",
+			parentBaseFee:   1e9,
+			parentGasUsed:   parentGasTarget - 1_000_000,
+			parentTime:      postJovian,
+			parentExtra:     EncodeMinBaseFeeExtraData(denom, elasticity, minBaseFee),
+			expectedBaseFee: minBaseFee,
+		},
+		{
+			// 2e9 - 2e9 * 1_000_000 / 10_000_000 / 50 = 1_996_000_000
+			name:            "gas used below target is not clamped when above minimum",
+			parentBaseFee:   2e9,
+			parentGasUsed:   parentGasTarget - 1_000_000,
+			parentTime:      postJovian,
+			parentExtra:     EncodeMinBaseFeeExtraData(denom, elasticity, minBaseFee),
+			expectedBaseFee: 1_996_000_000,
+		},
+		{
+			name:            "zero minimum is not enforced",
+			parentBaseFee:   1e9,
+			parentGasUsed:   parentGasTarget - 1_000_000,
+			parentTime:      postJovian,
+			parentExtra:     EncodeMinBaseFeeExtraData(denom, elasticity, 0),
+			expectedBaseFee: 998_000_000,
+		},
+		{
+			name:            "post-Jovian parent with Holocene extraData is not clamped",
+			parentBaseFee:   1,
+			parentGasUsed:   parentGasTarget - 1_000_000,
+			parentTime:      postJovian,
+			parentExtra:     EncodeHoloceneExtraData(denom, elasticity),
+			expectedBaseFee: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := &types.Header{
+				Number:   common.Big32,
+				GasLimit: parentGasLimit,
+				GasUsed:  test.parentGasUsed,
+				BaseFee:  new(big.Int).SetUint64(test.parentBaseFee),
+				Time:     test.parentTime,
+				Extra:    test.parentExtra,
+			}
+			have := CalcBaseFee(jovianConfig(), parent, parent.Time+2)
+			require.Equal(t, new(big.Int).SetUint64(test.expectedBaseFee), have)
+		})
+	}
+}
+
+func TestMinBaseFeeExtraData(t *testing.T) {
+	extra := EncodeMinBaseFeeExtraData(250, 6, 1e9)
+	// version | denominator | elasticity | minBaseFee
+	require.Equal(t, hexutil.MustDecode("0x01"+"000000fa"+"00000006"+"000000003b9aca00"), extra)
+	require.NoError(t, ValidateMinBaseFeeExtraData(extra))
+
+	d, e, m := DecodeMinBaseFeeExtraData(extra)
+	require.Equal(t, uint64(250), d)
+	require.Equal(t, uint64(6), e)
+	require.NotNil(t, m)
+	require.Equal(t, uint64(1e9), *m)
+
+	// The Holocene format is decoded without a minimum base fee.
+	d, e, m = DecodeMinBaseFeeExtraData(EncodeHoloceneExtraData(250, 6))
+	require.Equal(t, uint64(250), d)
+	require.Equal(t, uint64(6), e)
+	require.Nil(t, m)
+
+	d, e, m = DecodeMinBaseFeeExtraData(extra[:16])
+	require.Zero(t, d)
+	require.Zero(t, e)
+	require.Nil(t, m)
+
+	require.Panics(t, func() { EncodeMinBaseFeeExtraData(1<<32, 6, 0) })
+	require.Panics(t, func() { EncodeMinBaseFeeExtraData(250, 1<<32, 0) })
+}
+
+func TestValidateMinBaseFeeExtraData(t *testing.T) {
+	valid := EncodeMinBaseFeeExtraData(250, 6, 1e9)
+	wrongVersion := append([]byte{HoloceneExtraDataVersionByte}, valid[1:]...)
+	zeroDenominator := EncodeMinBaseFeeExtraData(0, 6, 1e9)
+
+	for _, test := range []struct {
+		extra    []byte
+		expected string
+	}{
+		{valid, ""},
+		{EncodeMinBaseFeeExtraData(0, 0, 0), ""},
+		{nil, "MinBaseFee extraData should be 17 bytes, got 0"},
+		{EncodeHoloceneExtraData(250, 6), "MinBaseFee extraData should be 17 bytes, got 9"},
+		{append(valid, 0), "MinBaseFee extraData should be 17 bytes, got 18"},
+		{wrongVersion, "MinBaseFee extraData should have 1 version byte, got 0"},
+		{zeroDenominator, "holocene params cannot have a 0 denominator unless elasticity is also 0"},
+	} {
+		t.Run(fmt.Sprintf("%x", test.extra), func(t *testing.T) {
+			err := ValidateMinBaseFeeExtraData(test.extra)
+			if test.expected == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, test.expected)
+			}
+		})
+	}
+}
+
+func TestOptimismExtraData(t *testing.T) {
+	config := jovianConfig()
+	minBaseFee := uint64(1e9)
+	holoceneExtra := EncodeHoloceneExtraData(250, 6)
+	jovianExtra := EncodeMinBaseFeeExtraData(250, 6, minBaseFee)
+
+	for _, test := range []struct {
+		name          string
+		time          uint64
+		extra         []byte
+		minBaseFee    *uint64
+		expectedError string
+	}{
+		{name: "pre-Holocene", time: 10, extra: nil},
+		{name: "Holocene", time: 12, extra: holoceneExtra},
+		{name: "Jovian", time: 14, extra: jovianExtra, minBaseFee: &minBaseFee},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			encoded := EncodeOptimismExtraData(config, test.time, 250, 6, test.minBaseFee)
+			require.Equal(t, test.extra, encoded)
+			require.NoError(t, ValidateOptimismExtraData(config, test.time, encoded))
+
+			d, e, m := DecodeOptimismExtraData(config, test.time, encoded)
+			require.Equal(t, test.minBaseFee, m)
+			if test.extra == nil {
+				require.Zero(t, d)
+				require.Zero(t, e)
+			} else {
+				require.Equal(t, uint64(250), d)
+				require.Equal(t, uint64(6), e)
+			}
+		})
+	}
+
+	require.EqualError(t, ValidateOptimismExtraData(config, 10, holoceneExtra), "extraData must be empty before Holocene")
+	require.EqualError(t, ValidateOptimismExtraData(config, 12, jovianExtra), "holocene extraData should be 9 bytes, got 17")
+	require.EqualError(t, ValidateOptimismExtraData(config, 14, holoceneExtra), "MinBaseFee extraData should be 17 bytes, got 9")
+	require.Panics(t, func() { EncodeOptimismExtraData(config, 14, 250, 6, nil) })
 }
