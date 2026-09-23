@@ -18,6 +18,17 @@ const minimumRetainLength parachaintypes.BlockNumber = 2
 
 var errLeafAlreadyKnown = errors.New("leaf was already known")
 
+// ImplicitView is the implicit view of the relay chain derived from the immediate view.
+type ImplicitView interface {
+	Leaves() []common.Hash
+	AllAllowedRelayParents() []common.Hash
+	ActivateLeaf(leafHash common.Hash, subsystemToOverseer chan<- any) error
+	DeactivateLeaf(leafHash common.Hash) []common.Hash
+	KnownAllowedRelayParentsUnder(blockHash common.Hash, paraID *parachaintypes.ParaID) []common.Hash
+}
+
+var _ ImplicitView = (*BackingImplicitView)(nil)
+
 // NewBackingImplicitView creates a new backing implicit view with the given runtime instance
 func NewBackingImplicitView(blockState BlockState, collatingFor *parachaintypes.ParaID) *BackingImplicitView {
 	return &BackingImplicitView{
