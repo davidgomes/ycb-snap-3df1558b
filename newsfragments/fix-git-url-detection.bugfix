@@ -1,0 +1,1 @@
+Fixed build context directories whose name ends with `.git` being treated as git URLs, which caused the `dockerfile` build option to be ignored. Git URLs without the `.git` suffix and scp-like URLs (e.g. `git@host:repo`) are now also detected.

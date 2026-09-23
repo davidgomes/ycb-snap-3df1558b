@@ -210,15 +210,46 @@ class TestContainerToBuildArgs(unittest.TestCase):
         with self.assertRaises(OSError):
             container_to_build_args(c, cnt, args, lambda path: False)
 
-    def test_context_invalid_git_url_git_is_not_suffix(self):
+    def test_context_git_url_without_git_suffix(self):
         c = create_compose_mock()
 
         cnt = get_minimal_container()
-        cnt['build']['context'] = "https://github.com/test_repo.git/not_suffix"
+        cnt['build']['context'] = "https://github.com/test_repo"
         args = get_minimal_args()
 
-        with self.assertRaises(OSError):
-            container_to_build_args(c, cnt, args, lambda path: False)
+        args = container_to_build_args(c, cnt, args, lambda path: False)
+        self.assertEqual(
+            args,
+            [
+                '-t',
+                'new-image',
+                '--no-cache',
+                '--pull-always',
+                'https://github.com/test_repo',
+            ],
+        )
+
+    def test_context_local_dir_ending_with_git_and_custom_dockerfile(self):
+        c = create_compose_mock()
+
+        cnt = get_minimal_container()
+        cnt['build']['context'] = "/path/to/workdir.git"
+        cnt['build']['dockerfile'] = "Dockerfile.test"
+        args = get_minimal_args()
+
+        args = container_to_build_args(c, cnt, args, lambda path: True)
+        self.assertEqual(
+            args,
+            [
+                '-f',
+                '/path/to/workdir.git/Dockerfile.test',
+                '-t',
+                'new-image',
+                '--no-cache',
+                '--pull-always',
+                '/path/to/workdir.git',
+            ],
+        )
 
     def test_build_ssh_absolute_path(self):
         c = create_compose_mock()
