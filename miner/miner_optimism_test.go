@@ -42,8 +42,10 @@ func TestDAFootprintMining(t *testing.T) {
 			}
 			daFootprint += txs[i].RollupCostData().EstimatedDASize().Uint64() * params.DAFootprintGasScalar
 		}
-		require.Less(t, txGas, block.GasUsed(), "total tx gas used must be smaller than block gas used")
-		require.Equal(t, daFootprint, block.GasUsed(), "total DA footprint used should be equal to block gas used")
+		require.Equal(t, txGas, block.GasUsed(), "total tx gas used should be equal to block gas used")
+		require.NotNil(t, block.BlobGasUsed())
+		require.Equal(t, daFootprint, *block.BlobGasUsed(), "DA footprint should be stored in blobGasUsed")
+		require.Greater(t, daFootprint, block.GasUsed(), "total DA footprint used should be greater than block gas used")
 	}
 	t.Run("jovian-at-limit", func(t *testing.T) {
 		testMineAndExecute(t, 17, jovianConfig(), func(t *testing.T, block *types.Block, receipts []*types.Receipt) {

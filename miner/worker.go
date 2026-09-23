@@ -201,9 +201,11 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 		}
 	}
 
-	// OP-Stack addition: Jovian maxes the block.gasUsed with the calldata footprint
-	if miner.chainConfig.IsJovian(work.header.Time) && work.daFootprint > work.header.GasUsed {
-		work.header.GasUsed = work.daFootprint
+	// OP-Stack: Jovian stores the DA footprint in BlobGasUsed. GasUsed stays the
+	// sum of transaction gas so payload validation and base-fee updates agree.
+	if miner.chainConfig.IsDAFootprintBlockLimit(work.header.Time) {
+		daFootprint := work.daFootprint
+		work.header.BlobGasUsed = &daFootprint
 	}
 
 	body := types.Body{Transactions: work.txs, Withdrawals: genParam.withdrawals}

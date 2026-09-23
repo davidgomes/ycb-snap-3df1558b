@@ -410,6 +410,15 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 		}
 	}
 
+	// Store DA footprint in BlobGasUsed if the builder has not already set it.
+	if chain.Config().IsDAFootprintBlockLimit(header.Time) && (header.BlobGasUsed == nil || *header.BlobGasUsed == 0) {
+		daFootprint, err := types.CalcDAFootprint(body.Transactions)
+		if err != nil {
+			return nil, fmt.Errorf("error calculating DA footprint: %w", err)
+		}
+		header.BlobGasUsed = &daFootprint
+	}
+
 	// Assemble the final block.
 	block := types.NewBlock(header, body, receipts, trie.NewStackTrie(nil), chain.Config())
 

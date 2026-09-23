@@ -274,12 +274,14 @@ func TestCalcBaseFeeJovian(t *testing.T) {
 	for i, test := range tests {
 		testName := fmt.Sprintf("test %d", i)
 		t.Run(testName, func(t *testing.T) {
+			zeroBlobGas := uint64(0)
 			parent := &types.Header{
-				Number:   common.Big32,
-				GasLimit: parentGasLimit,
-				GasUsed:  test.parentGasUsed,
-				BaseFee:  big.NewInt(test.parentBaseFee),
-				Time:     test.parentTime,
+				Number:      common.Big32,
+				GasLimit:    parentGasLimit,
+				GasUsed:     test.parentGasUsed,
+				BlobGasUsed: &zeroBlobGas,
+				BaseFee:     big.NewInt(test.parentBaseFee),
+				Time:        test.parentTime,
 			}
 			parent.Extra = EncodeOptimismExtraData(opConfig(), test.parentTime, denom, elasticity, &test.minBaseFee)
 			have, want := CalcBaseFee(opConfig(), parent, parent.Time+2), big.NewInt(int64(test.expectedBaseFee))

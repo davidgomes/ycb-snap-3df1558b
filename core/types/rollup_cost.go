@@ -19,6 +19,7 @@ package types
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -566,6 +567,23 @@ func (cd RollupCostData) estimatedDASizeScaled() *big.Int {
 func (cd RollupCostData) EstimatedDASize() *big.Int {
 	b := cd.estimatedDASizeScaled()
 	return b.Div(b, big.NewInt(1e6))
+}
+
+// CalcDAFootprint returns the Jovian DA footprint for a block.
+// Deposit transactions are excluded. The footprint uses the protocol scalar
+// so it is comparable to gas and is stored in the header BlobGasUsed field.
+func CalcDAFootprint(txs []*Transaction) (uint64, error) {
+	if len(txs) == 0 || !txs[0].IsDepositTx() {
+		return 0, errors.New("missing deposit transaction")
+	}
+	var daFootprint uint64
+	for _, tx := range txs {
+		if tx.IsDepositTx() {
+			continue
+		}
+		daFootprint += tx.RollupCostData().EstimatedDASize().Uint64() * params.DAFootprintGasScalar
+	}
+	return daFootprint, nil
 }
 
 func ExtractEcotoneFeeParams(l1FeeParams []byte) (l1BaseFeeScalar, l1BlobBaseFeeScalar *big.Int) {
