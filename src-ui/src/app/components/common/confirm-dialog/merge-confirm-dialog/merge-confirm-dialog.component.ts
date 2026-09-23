@@ -30,6 +30,7 @@ export class MergeConfirmDialogComponent
 {
   public documentIDs: number[] = []
   public deleteOriginals: boolean = false
+  public archiveFallback: boolean = false
   private _documents: Document[] = []
   get documents(): Document[] {
     return this._documents

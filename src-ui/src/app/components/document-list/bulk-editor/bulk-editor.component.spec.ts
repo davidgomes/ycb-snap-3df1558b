@@ -1039,6 +1039,26 @@ describe('BulkEditorComponent', () => {
     httpTestingController.match(
       `${environment.apiBaseUrl}documents/?page=1&page_size=100000&fields=id`
     ) // listAllFilteredIds
+
+    // Test with archive fallback enabled
+    modal.componentInstance.deleteOriginals = false
+    modal.componentInstance.archiveFallback = true
+    modal.componentInstance.confirm()
+    req = httpTestingController.expectOne(
+      `${environment.apiBaseUrl}documents/bulk_edit/`
+    )
+    req.flush(true)
+    expect(req.request.body).toEqual({
+      documents: [3, 4],
+      method: 'merge',
+      parameters: { metadata_document_id: 3, archive_fallback: true },
+    })
+    httpTestingController.match(
+      `${environment.apiBaseUrl}documents/?page=1&page_size=50&ordering=-created&truncate_content=true`
+    ) // list reload
+    httpTestingController.match(
+      `${environment.apiBaseUrl}documents/?page=1&page_size=100000&fields=id`
+    ) // listAllFilteredIds
     expect(documentListViewService.selected.size).toEqual(0)
   })
 
