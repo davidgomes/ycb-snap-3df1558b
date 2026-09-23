@@ -97,6 +97,7 @@ func (j *Jira) Configure(repo *cache.RepoCache, params core.BridgeParams) (core.
 	conf[core.ConfigKeyTarget] = target
 	conf[confKeyBaseUrl] = baseURL
 	conf[confKeyProject] = project
+	conf[confKeyDefaultLogin] = login
 	conf[confKeyCredentialType] = credType
 
 	err = j.ValidateConfig(conf)
@@ -147,6 +148,10 @@ func (*Jira) ValidateConfig(conf core.Configuration) error {
 
 	if _, ok := conf[confKeyProject]; !ok {
 		return fmt.Errorf("missing %s key", confKeyProject)
+	}
+
+	if _, ok := conf[confKeyDefaultLogin]; !ok {
+		return fmt.Errorf("missing %s key", confKeyDefaultLogin)
 	}
 
 	return nil

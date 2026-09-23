@@ -32,7 +32,11 @@ type githubImporter struct {
 func (gi *githubImporter) Init(_ context.Context, repo *cache.RepoCache, conf core.Configuration) error {
 	gi.conf = conf
 
-	creds, err := auth.List(repo, auth.WithTarget(target), auth.WithKind(auth.KindToken))
+	creds, err := auth.List(repo,
+		auth.WithTarget(target),
+		auth.WithKind(auth.KindToken),
+		auth.WithMeta(auth.MetaKeyLogin, conf[confKeyDefaultLogin]),
+	)
 	if err != nil {
 		return err
 	}
