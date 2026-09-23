@@ -41,8 +41,9 @@ func (*Gitlab) NewExporter() core.Exporter {
 	return &gitlabExporter{}
 }
 
-// normalizeBaseURL turns a GitLab instance URL into an API base of scheme+host.
-// Values without a trailing slash are accepted; an empty value uses gitlab.com.
+// normalizeBaseURL accepts a GitLab API base with or without a trailing slash.
+// An empty value defaults to https://gitlab.com/. The value must be scheme+host,
+// not a project path.
 func normalizeBaseURL(baseURL string) string {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
