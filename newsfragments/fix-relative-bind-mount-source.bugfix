@@ -1,0 +1,1 @@
+Fixed relative bind-mount host paths so they are resolved against the Compose project directory before they are passed to Podman.

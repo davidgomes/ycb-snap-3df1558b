@@ -421,6 +421,9 @@ async def assert_volume(compose: PodmanCompose, mount_dict: dict[str, Any]) -> N
                 os.makedirs(mount_src, exist_ok=True)
             except OSError:
                 pass
+        # Keep the resolved host path. Relative sources are otherwise left
+        # unchanged and Podman resolves them against the process cwd.
+        mount_dict["source"] = mount_src
         return
     if mount_dict["type"] != "volume" or not vol or not vol.get("name"):
         return
