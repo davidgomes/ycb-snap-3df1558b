@@ -1,0 +1,68 @@
+from datetime import date
+from datetime import datetime
+
+from babel import Locale
+from babel import dates
+from django.utils.dateparse import parse_date
+from django.utils.dateparse import parse_datetime
+
+
+def localize_date(value: date | datetime | str, format: str, locale: str) -> str:
+    """
+    Format a date, datetime or str object into a localized string using Babel.
+
+    Args:
+        value (date | datetime | str): The date or datetime to format. If a datetime
+            is provided, it should be timezone-aware (e.g., UTC from a Django DB object).
+            If str is provided it is parsed as a datetime, then as a date.
+        format (str): The format to use. Can be one of Babel's preset formats
+            ('short', 'medium', 'long', 'full') or a custom pattern string.
+        locale (str): The locale code (e.g., 'en_US', 'fr_FR') to use for
+            localization.
+
+    Returns:
+        str: The localized, formatted date string.
+
+    Raises:
+        TypeError: If `value` is not a date, datetime or str instance.
+        ValueError: If `locale` is not a valid locale identifier, or a string
+            value cannot be parsed as a date or datetime.
+    """
+    if isinstance(value, str):
+        parsed = parse_datetime(value)
+        if parsed is None:
+            parsed = parse_date(value)
+        if parsed is None:
+            raise ValueError(f"Unable to parse date string: {value}")
+        value = parsed
+
+    try:
+        Locale.parse(locale)
+    except Exception as e:
+        raise ValueError(f"Invalid locale identifier: {locale}") from e
+
+    # datetime is a subclass of date, so it must be checked first.
+    if isinstance(value, datetime):
+        return dates.format_datetime(value, format=format, locale=locale)
+    elif isinstance(value, date):
+        return dates.format_date(value, format=format, locale=locale)
+    else:
+        raise TypeError(f"Unsupported type {type(value)} for localize_date")
+
+
+def format_datetime(value: str | datetime, format: str) -> str:
+    if isinstance(value, str):
+        value = parse_date(value)
+    return value.strftime(format=format)
+
+
+def get_cf_value(
+    custom_field_data: dict[str, dict[str, str]],
+    name: str,
+    default: str | None = None,
+) -> str | None:
+    if name in custom_field_data and custom_field_data[name]["value"] is not None:
+        return custom_field_data[name]["value"]
+    elif default is not None:
+        return default
+    return None

@@ -2,12 +2,10 @@ import logging
 import os
 import re
 from collections.abc import Iterable
-from datetime import datetime
 from pathlib import PurePath
 
 import pathvalidate
 from django.utils import timezone
-from django.utils.dateparse import parse_date
 from django.utils.text import slugify as django_slugify
 from jinja2 import StrictUndefined
 from jinja2 import Template
@@ -24,6 +22,9 @@ from documents.models import Document
 from documents.models import DocumentType
 from documents.models import StoragePath
 from documents.models import Tag
+from documents.templating.filters import format_datetime
+from documents.templating.filters import get_cf_value
+from documents.templating.filters import localize_date
 
 logger = logging.getLogger("paperless.templating")
 
@@ -78,30 +79,13 @@ class FilePathTemplate(Template):
         return clean_filepath(original_render)
 
 
-def get_cf_value(
-    custom_field_data: dict[str, dict[str, str]],
-    name: str,
-    default: str | None = None,
-) -> str | None:
-    if name in custom_field_data and custom_field_data[name]["value"] is not None:
-        return custom_field_data[name]["value"]
-    elif default is not None:
-        return default
-    return None
-
-
 _template_environment.filters["get_cf_value"] = get_cf_value
-
-
-def format_datetime(value: str | datetime, format: str) -> str:
-    if isinstance(value, str):
-        value = parse_date(value)
-    return value.strftime(format=format)
-
 
 _template_environment.filters["datetime"] = format_datetime
 
 _template_environment.filters["slugify"] = django_slugify
+
+_template_environment.filters["localize_date"] = localize_date
 
 
 def create_dummy_document():

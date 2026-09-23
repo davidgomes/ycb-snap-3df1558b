@@ -510,6 +510,14 @@ Invoice_{{ custom_fields|get_cf_value("Select Field") }}_{{ custom_fields|get_cf
 
 This will create a path like `invoices/2022/01/01/Invoice_OptionTwo_20220101.pdf` if the custom field "Date Field" is set to January 1, 2022 and "Select Field" is set to `OptionTwo`.
 
+The `localize_date` filter formats a date, datetime, or ISO date string with Babel, including translated month and weekday names and locale-specific patterns. Use it on a date or datetime (for example `document.created` or `document.added`) or on an ISO string such as `created`. The format argument is a Babel preset (`short`, `medium`, `long`, `full`) or a pattern such as `dd.MM.yyyy` or `EEEE, d. MMMM yyyy`. The locale argument is an identifier such as `en_US` or `de_DE`. Time-zone pattern fields are applied when the value is a timezone-aware datetime.
+
+```jinja
+{{ document.created | localize_date('medium', 'de_DE') }}
+{{ document.added | localize_date('EEEE, d. MMMM yyyy HH:mm z', 'fr_FR') }}
+{{ created | localize_date('dd.MM.yyyy', 'de_DE') }}
+```
+
 You can also use a custom `slugify` filter to slufigy text:
 
 ```jinja

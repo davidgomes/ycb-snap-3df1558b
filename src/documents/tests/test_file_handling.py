@@ -1527,6 +1527,41 @@ class TestFilenameGeneration(DirectoriesMixin, TestCase):
                 Path("2024-10-01/Some Title.pdf"),
             )
 
+    def test_localize_date_filter(self):
+        """
+        GIVEN:
+            - Filename format with the localize_date filter
+        WHEN:
+            - Filepath for a document with this format is called
+        THEN:
+            - Dates render with locale-specific patterns and translated names
+        """
+        doc = Document.objects.create(
+            title="Some Title",
+            created=datetime.date(2023, 10, 26),
+            added=timezone.make_aware(datetime.datetime(2023, 10, 26, 15, 4, 5)),
+            mime_type="application/pdf",
+            checksum="localize",
+        )
+
+        with override_settings(
+            FILENAME_FORMAT="{{ document.created | localize_date('MMMM d, yyyy', 'en_US') }}",
+        ):
+            self.assertEqual(generate_filename(doc), Path("October 26, 2023.pdf"))
+
+        with override_settings(
+            FILENAME_FORMAT="{{ created | localize_date('dd.MM.yyyy', 'de_DE') }}",
+        ):
+            self.assertEqual(generate_filename(doc), Path("26.10.2023.pdf"))
+
+        with override_settings(
+            FILENAME_FORMAT="{{ document.created | localize_date('EEEE, d. MMMM yyyy', 'de_DE') }}",
+        ):
+            self.assertEqual(
+                generate_filename(doc),
+                Path("Donnerstag, 26. Oktober 2023.pdf"),
+            )
+
     def test_slugify_filter(self):
         """
         GIVEN:
