@@ -74,7 +74,7 @@ func TestJovianDAFootprintForcedTxs(t *testing.T) {
 	t.Run("forced-and-pool", func(t *testing.T) {
 		w, b := newTestWorker(t, jovianDAFootprintTestConfig(), beacon.New(ethash.NewFaker()), rawdb.NewMemoryDatabase(), 0)
 		// The forced txs take nonces 0-4, so the miner skips the pool txs with those nonces.
-		for _, err := range b.txPool.Add(genTxs(1, 20), false) {
+		for _, err := range b.txPool.Add(genTxs(1, 20), true) {
 			require.NoError(t, err, "failed adding tx to pool")
 		}
 
@@ -126,7 +126,7 @@ func TestJovianDAFootprintPrioritySenders(t *testing.T) {
 			}))
 		}
 	}
-	for _, err := range b.txPool.Add(txs, false) {
+	for _, err := range b.txPool.Add(txs, true) {
 		require.NoError(t, err, "failed adding tx to pool")
 	}
 
