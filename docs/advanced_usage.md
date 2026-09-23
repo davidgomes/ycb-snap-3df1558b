@@ -510,6 +510,19 @@ Invoice_{{ custom_fields|get_cf_value("Select Field") }}_{{ custom_fields|get_cf
 
 This will create a path like `invoices/2022/01/01/Invoice_OptionTwo_20220101.pdf` if the custom field "Date Field" is set to January 1, 2022 and "Select Field" is set to `OptionTwo`.
 
+You can also use the `localize_date` filter to format a date or datetime in a specific language and locale.
+It must be applied to a date or datetime object, such as `document.created`, and accepts either a Babel preset (`short`, `medium`, `long`, `full`) or a [custom pattern](https://unicode.org/reports/tr35/tr35-dates.html#Date_Format_Patterns):
+
+```jinja
+{{ title }}_{{ document.created | localize_date('long', 'en_US') }}
+{{ title }}_{{ document.created | localize_date('dd.MM.yyyy', 'de_DE') }}
+{{ title }}_{{ document.created | localize_date('EEEE, d MMMM yyyy', 'fr_FR') }}
+```
+
+For a document created on 26 October 2023, those templates produce `Title_October 26, 2023`, `Title_26.10.2023`, and `Title_jeudi, 26 octobre 2023`.
+Timezone-aware datetimes, such as `document.added`, can include time and zone fields in the pattern (for example `yyyy.MM.dd HH:mm:ss zzz`).
+An invalid locale identifier raises an error, and values that are not dates or datetimes are rejected.
+
 You can also use a custom `slugify` filter to slufigy text:
 
 ```jinja
