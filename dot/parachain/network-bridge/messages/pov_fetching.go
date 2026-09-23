@@ -6,6 +6,7 @@ package messages
 import (
 	"fmt"
 
+	"github.com/ChainSafe/gossamer/dot/network"
 	parachaintypes "github.com/ChainSafe/gossamer/dot/parachain/types"
 	"github.com/ChainSafe/gossamer/pkg/scale"
 )
@@ -24,6 +25,16 @@ func (p *PoVFetchingRequest) Encode() ([]byte, error) {
 // Decode returns the SCALE decoding of the PoVFetchingRequest
 func (p *PoVFetchingRequest) Decode(in []byte) (err error) {
 	return scale.Unmarshal(in, p)
+}
+
+// Protocol returns the sub-protocol ID for this message.
+func (p *PoVFetchingRequest) Protocol() ReqProtocolName {
+	return PoVFetchingV1
+}
+
+// Response returns an instance of the response type for this message, for the purpose of decoding into it.
+func (p *PoVFetchingRequest) Response() network.ResponseMessage {
+	return &PoVFetchingResponse{}
 }
 
 type PoVFetchingResponseValues interface {

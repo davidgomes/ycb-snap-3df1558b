@@ -268,12 +268,6 @@ func (ad *AvailabilityDistribution) ProcessBlockFinalizedSignal(_ parachaintypes
 	return nil // nothing to do
 }
 
-func (ad *AvailabilityDistribution) processAvailabilityDistributionMessageFetchPoV(
-	msg parachaintypes.AvailabilityDistributionMessageFetchPoV,
-) error {
-	return nil // TODO: implement #4489
-}
-
 func (ad *AvailabilityDistribution) handleChunkFetchingRequest(
 	_ peer.ID,
 	payload []byte,
