@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/holiman/uint256"
 	"math/big"
 	"sync"
 
@@ -32,7 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 )
 
-type L1CostFunc func(dataGas types.RollupCostData) *big.Int
+type RollupCostFunc func(tx types.RollupTransaction) *uint256.Int
 
 // TxStatus is the current status of a transaction as seen by the pool.
 type TxStatus uint

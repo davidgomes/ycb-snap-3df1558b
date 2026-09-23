@@ -260,7 +260,7 @@ type LegacyPool struct {
 
 	changesSinceReorg int // A counter for how many drops we've performed in-between reorg.
 
-	l1CostFn txpool.L1CostFunc // To apply L1 costs as rollup, optional field, may be nil.
+	rollupCostFn txpool.RollupCostFunc // To apply L1 and operator costs as rollup, optional field, may be nil.
 }
 
 type txpoolResetRequest struct {
@@ -638,9 +638,9 @@ func (pool *LegacyPool) validateTx(tx *types.Transaction) error {
 			if list := pool.pending[addr]; list != nil {
 				if tx := list.txs.Get(nonce); tx != nil {
 					cost := tx.Cost()
-					if pool.l1CostFn != nil {
-						if l1Cost := pool.l1CostFn(tx.RollupCostData()); l1Cost != nil { // add rollup cost
-							cost = cost.Add(cost, l1Cost)
+					if pool.rollupCostFn != nil {
+						if rollupCost := pool.rollupCostFn(tx); rollupCost != nil { // add rollup cost
+							cost = cost.Add(cost, rollupCost.ToBig())
 						}
 					}
 					return cost
@@ -648,7 +648,7 @@ func (pool *LegacyPool) validateTx(tx *types.Transaction) error {
 			}
 			return nil
 		},
-		L1CostFn: pool.l1CostFn,
+		RollupCostFn: pool.rollupCostFn,
 	}
 	if err := txpool.ValidateTransactionWithState(tx, pool.signer, opts); err != nil {
 		return err
@@ -802,7 +802,7 @@ func (pool *LegacyPool) add(tx *types.Transaction) (replaced bool, err error) {
 	// Try to replace an existing transaction in the pending pool
 	if list := pool.pending[from]; list != nil && list.Contains(tx.Nonce()) {
 		// Nonce already pending, check if required price bump is met
-		inserted, old := list.Add(tx, pool.config.PriceBump, pool.l1CostFn)
+		inserted, old := list.Add(tx, pool.config.PriceBump, pool.rollupCostFn)
 		if !inserted {
 			pendingDiscardMeter.Mark(1)
 			return false, txpool.ErrReplaceUnderpriced
@@ -865,7 +865,7 @@ func (pool *LegacyPool) enqueueTx(hash common.Hash, tx *types.Transaction, addAl
 	if pool.queue[from] == nil {
 		pool.queue[from] = newList(false)
 	}
-	inserted, old := pool.queue[from].Add(tx, pool.config.PriceBump, pool.l1CostFn)
+	inserted, old := pool.queue[from].Add(tx, pool.config.PriceBump, pool.rollupCostFn)
 	if !inserted {
 		// An older transaction was better, discard this
 		queuedDiscardMeter.Mark(1)
@@ -907,7 +907,7 @@ func (pool *LegacyPool) promoteTx(addr common.Address, hash common.Hash, tx *typ
 	}
 	list := pool.pending[addr]
 
-	inserted, old := list.Add(tx, pool.config.PriceBump, pool.l1CostFn)
+	inserted, old := list.Add(tx, pool.config.PriceBump, pool.rollupCostFn)
 	if !inserted {
 		// An older transaction was better, discard this
 		pool.all.Remove(hash)
@@ -1418,9 +1418,9 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
 	pool.currentState = statedb
 	pool.pendingNonces = newNoncer(statedb)
 
-	if costFn := types.NewL1CostFunc(pool.chainconfig, statedb); costFn != nil {
-		pool.l1CostFn = func(rollupCostData types.RollupCostData) *big.Int {
-			return costFn(rollupCostData, newHead.Time)
+	if costFn := types.NewTotalRollupCostFunc(pool.chainconfig, statedb); costFn != nil {
+		pool.rollupCostFn = func(tx types.RollupTransaction) *uint256.Int {
+			return costFn(tx, newHead.Time)
 		}
 	}
 
@@ -1433,10 +1433,9 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
 // reduceBalanceByL1Cost returns the given balance, reduced by the L1Cost of the first transaction in list if applicable
 // Other txs will get filtered out necessary.
 func (pool *LegacyPool) reduceBalanceByL1Cost(list *list, balance *uint256.Int) *uint256.Int {
-	if !list.Empty() && pool.l1CostFn != nil {
+	if !list.Empty() && pool.rollupCostFn != nil {
 		el := list.txs.FirstElement()
-		if l1Cost := pool.l1CostFn(el.RollupCostData()); l1Cost != nil {
-			l1Cost256 := uint256.MustFromBig(l1Cost)
+		if l1Cost256 := pool.rollupCostFn(el); l1Cost256 != nil {
 			if l1Cost256.Cmp(balance) >= 0 {
 				// Avoid underflow
 				balance = uint256.NewInt(0)

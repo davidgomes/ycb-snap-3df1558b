@@ -161,7 +161,7 @@ func NewL1CostFunc(config *params.ChainConfig, statedb StateGetter) L1CostFunc {
 			return newL1CostFuncBedrock(config, statedb, blockTime)
 		}
 
-		l1BaseFeeScalar, l1BlobBaseFeeScalar := extractEcotoneFeeParams(l1FeeScalars)
+		l1BaseFeeScalar, l1BlobBaseFeeScalar := ExtractEcotoneFeeParams(l1FeeScalars)
 
 		if config.IsOptimismFjord(blockTime) {
 			return NewL1CostFuncFjord(
@@ -214,7 +214,7 @@ func NewOperatorCostFunc(config *params.ChainConfig, statedb StateGetter) Operat
 				return uint256.NewInt(0)
 			}
 		}
-		operatorFeeScalar, operatorFeeConstant := extractOperatorFeeParams(operatorFeeParams)
+		operatorFeeScalar, operatorFeeConstant := ExtractOperatorFeeParams(operatorFeeParams)
 
 		return newOperatorCostFunc(operatorFeeScalar, operatorFeeConstant)
 	}
@@ -226,6 +226,44 @@ func NewOperatorCostFunc(config *params.ChainConfig, statedb StateGetter) Operat
 		}
 
 		return cachedFunc(gas)
+	}
+}
+
+// RollupTransaction is the subset of transaction data needed to compute its total rollup cost.
+type RollupTransaction interface {
+	RollupCostData() RollupCostData
+	Gas() uint64
+}
+
+// TotalRollupCostFunc returns the total rollup cost (L1 data fee plus operator fee) of a
+// transaction, or nil if no rollup cost is charged.
+type TotalRollupCostFunc func(tx RollupTransaction, blockTime uint64) *uint256.Int
+
+// NewTotalRollupCostFunc returns a function combining the L1 cost and, from Isthmus on, the
+// operator cost of a transaction. It returns nil if this is not an op-stack chain.
+func NewTotalRollupCostFunc(config *params.ChainConfig, statedb StateGetter) TotalRollupCostFunc {
+	l1CostFn := NewL1CostFunc(config, statedb)
+	if l1CostFn == nil {
+		return nil
+	}
+	operatorCostFn := NewOperatorCostFunc(config, statedb)
+	return func(tx RollupTransaction, blockTime uint64) *uint256.Int {
+		if tx.RollupCostData() == (RollupCostData{}) {
+			return nil
+		}
+		var total *uint256.Int
+		if l1Cost := l1CostFn(tx.RollupCostData(), blockTime); l1Cost != nil {
+			total = uint256.MustFromBig(l1Cost)
+		}
+		if config.IsOptimismIsthmus(blockTime) && operatorCostFn != nil {
+			if opCost := operatorCostFn(tx.Gas(), blockTime); opCost != nil && !opCost.IsZero() {
+				if total == nil {
+					total = new(uint256.Int)
+				}
+				total = new(uint256.Int).Add(total, opCost)
+			}
+		}
+		return total
 	}
 }
 
@@ -515,14 +553,14 @@ func (cd RollupCostData) EstimatedDASize() *big.Int {
 	return b.Div(b, big.NewInt(1e6))
 }
 
-func extractEcotoneFeeParams(l1FeeParams []byte) (l1BaseFeeScalar, l1BlobBaseFeeScalar *big.Int) {
+func ExtractEcotoneFeeParams(l1FeeParams []byte) (l1BaseFeeScalar, l1BlobBaseFeeScalar *big.Int) {
 	offset := scalarSectionStart
 	l1BaseFeeScalar = new(big.Int).SetBytes(l1FeeParams[offset : offset+4])
 	l1BlobBaseFeeScalar = new(big.Int).SetBytes(l1FeeParams[offset+4 : offset+8])
 	return
 }
 
-func extractOperatorFeeParams(operatorFeeParams common.Hash) (operatorFeeScalar, operatorFeeConstant *big.Int) {
+func ExtractOperatorFeeParams(operatorFeeParams common.Hash) (operatorFeeScalar, operatorFeeConstant *big.Int) {
 	operatorFeeScalar = new(big.Int).SetBytes(operatorFeeParams[20:24])
 	operatorFeeConstant = new(big.Int).SetBytes(operatorFeeParams[24:32])
 	return
