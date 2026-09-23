@@ -342,6 +342,13 @@ class ApplicationConfigurationViewSet(ModelViewSet):
     serializer_class = ApplicationConfigurationSerializer
     permission_classes = (IsAuthenticated, DjangoModelPermissions)
 
+    @extend_schema(exclude=True)
+    def create(self, request, *args, **kwargs):
+        """
+        Application configuration is a singleton. Updates go through PATCH/PUT.
+        """
+        return Response(status=405)  # Not Allowed
+
 
 @extend_schema_view(
     post=extend_schema(

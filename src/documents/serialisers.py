@@ -1189,7 +1189,6 @@ class SavedViewSerializer(OwnedObjectSerializer):
             "owner",
             "permissions",
             "user_can_change",
-            "set_permissions",
         ]
 
     def validate(self, attrs):
@@ -1754,6 +1753,8 @@ class StoragePathSerializer(MatchingModelSerializer, OwnedObjectSerializer):
 
 
 class UiSettingsViewSerializer(serializers.ModelSerializer):
+    settings = serializers.DictField(required=False, allow_null=True)
+
     class Meta:
         model = UiSettings
         depth = 1
@@ -1763,6 +1764,9 @@ class UiSettingsViewSerializer(serializers.ModelSerializer):
         ]
 
     def validate_settings(self, settings):
+        # DictField rejects non-objects; null is allowed and has nothing to clean.
+        if not isinstance(settings, dict):
+            return settings
         # we never save update checking backend setting
         if "update_checking" in settings:
             try:
@@ -2020,11 +2024,31 @@ class WorkflowTriggerSerializer(serializers.ModelSerializer):
         ):
             attrs["filter_path"] = None
 
+        trigger_type = attrs.get("type", getattr(self.instance, "type", None))
+
+        def _missing(field_name: str) -> bool:
+            """
+            A filter counts as missing when this request clears it, omits it on
+            create, or omits it on update and the stored value is also empty.
+            """
+            if field_name in attrs:
+                return attrs[field_name] is None
+            if self.instance is not None:
+                return getattr(self.instance, field_name) in (None, "")
+            return True
+
+        # Providing a mail rule (or keeping the one already stored) satisfies
+        # the consumption filter requirement, matching the previous check that
+        # skipped validation whenever filter_mailrule was present.
+        has_mailrule = "filter_mailrule" in attrs or (
+            self.instance is not None and self.instance.filter_mailrule_id is not None
+        )
+
         if (
-            attrs["type"] == WorkflowTrigger.WorkflowTriggerType.CONSUMPTION
-            and "filter_mailrule" not in attrs
-            and ("filter_filename" not in attrs or attrs["filter_filename"] is None)
-            and ("filter_path" not in attrs or attrs["filter_path"] is None)
+            trigger_type == WorkflowTrigger.WorkflowTriggerType.CONSUMPTION
+            and not has_mailrule
+            and _missing("filter_filename")
+            and _missing("filter_path")
         ):
             raise serializers.ValidationError(
                 "File name, path or mail rule filter are required",
