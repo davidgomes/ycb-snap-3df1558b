@@ -34,8 +34,15 @@ func postIsthmus() *params.ChainConfig {
 	return cfg
 }
 
+func postJovian() *params.ChainConfig {
+	cfg := postIsthmus()
+	cfg.JovianTime = new(uint64)
+	return cfg
+}
+
 var valid1559Params = []byte{0, 1, 2, 3, 4, 5, 6, 7}
 var validExtraData = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8}
+var validJovianExtraData = []byte{1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 9}
 var emptyWithdrawals = make([]*types.Withdrawal, 0)
 
 func TestCheckOptimismPayload(t *testing.T) {
@@ -136,6 +143,46 @@ func TestCheckOptimismPayload(t *testing.T) {
 			cfg:      postIsthmus(),
 			expected: errors.New("nil withdrawalsRoot post-Isthmus"),
 		},
+		{
+			name: "valid payload post-Jovian",
+			params: engine.ExecutableData{
+				ExtraData:       validJovianExtraData,
+				Withdrawals:     emptyWithdrawals,
+				WithdrawalsRoot: &types.EmptyWithdrawalsHash,
+			},
+			cfg:      postJovian(),
+			expected: nil,
+		},
+		{
+			name: "invalid Holocene extraData post-Jovian",
+			params: engine.ExecutableData{
+				ExtraData:       validExtraData,
+				Withdrawals:     emptyWithdrawals,
+				WithdrawalsRoot: &types.EmptyWithdrawalsHash,
+			},
+			cfg:      postJovian(),
+			expected: errors.New("jovian extraData should be 17 bytes, got 9"),
+		},
+		{
+			name: "invalid extraData version post-Jovian",
+			params: engine.ExecutableData{
+				ExtraData:       append([]byte{0}, validJovianExtraData[1:]...),
+				Withdrawals:     emptyWithdrawals,
+				WithdrawalsRoot: &types.EmptyWithdrawalsHash,
+			},
+			cfg:      postJovian(),
+			expected: errors.New("jovian extraData should have version byte 1, got 0"),
+		},
+		{
+			name: "invalid Jovian extraData pre-Jovian",
+			params: engine.ExecutableData{
+				ExtraData:       validJovianExtraData,
+				Withdrawals:     emptyWithdrawals,
+				WithdrawalsRoot: &types.EmptyWithdrawalsHash,
+			},
+			cfg:      postIsthmus(),
+			expected: errors.New("holocene extraData should be 9 bytes, got 17"),
+		},
 	}
 
 	for _, test := range tests {
@@ -215,6 +262,35 @@ func TestCheckOptimismPayloadAttributes(t *testing.T) {
 				EIP1559Params: valid1559Params,
 			},
 			cfg:      postHolocene(),
+			expected: nil,
+		},
+		{
+			name: "invalid non-nil minBaseFee pre-Jovian",
+			payloadAttributes: &engine.PayloadAttributes{
+				GasLimit:      new(uint64),
+				EIP1559Params: valid1559Params,
+				MinBaseFee:    new(uint64),
+			},
+			cfg:      postIsthmus(),
+			expected: errors.New("non-nil minBaseFee pre-Jovian"),
+		},
+		{
+			name: "invalid nil minBaseFee post-Jovian",
+			payloadAttributes: &engine.PayloadAttributes{
+				GasLimit:      new(uint64),
+				EIP1559Params: valid1559Params,
+			},
+			cfg:      postJovian(),
+			expected: errors.New("missing minBaseFee post-Jovian"),
+		},
+		{
+			name: "valid payload attributes post-Jovian",
+			payloadAttributes: &engine.PayloadAttributes{
+				GasLimit:      new(uint64),
+				EIP1559Params: valid1559Params,
+				MinBaseFee:    new(uint64),
+			},
+			cfg:      postJovian(),
 			expected: nil,
 		},
 	}

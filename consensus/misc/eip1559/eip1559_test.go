@@ -17,6 +17,7 @@
 package eip1559
 
 import (
+	"bytes"
 	"math/big"
 	"testing"
 
@@ -215,6 +216,117 @@ func TestCalcBaseFeeOptimismHolocene(t *testing.T) {
 		}
 		if have, want := CalcBaseFee(opConfig(), parent, parent.Time+2), big.NewInt(test.expectedBaseFee); have.Cmp(want) != 0 {
 			t.Errorf("test %d: have %d  want %d, ", i, have, want)
+		}
+	}
+}
+
+func jovianConfig() *params.ChainConfig {
+	config := opConfig()
+	jt := uint64(14)
+	config.JovianTime = &jt
+	return config
+}
+
+// TestCalcBaseFeeOptimismJovian tests that the minimum base fee from the parent extraData is
+// enforced post-Jovian, and ignored pre-Jovian.
+func TestCalcBaseFeeOptimismJovian(t *testing.T) {
+	parentBaseFee := int64(10_000_000)
+	parentGasLimit := uint64(30_000_000)
+	denom, elasticity := uint64(10), uint64(2)
+
+	tests := []struct {
+		name            string
+		parentGasUsed   uint64
+		minBaseFee      uint64
+		expectedBaseFee int64
+	}{
+		{"target, no floor", parentGasLimit / 2, 0, parentBaseFee},
+		{"below, no floor", 10_000_000, 0, 9_666_667},
+		{"above, no floor", 20_000_000, 0, 10_333_333},
+		{"below, floor below computed", 10_000_000, 9_000_000, 9_666_667},
+		{"below, floor above computed", 10_000_000, 9_800_000, 9_800_000},
+		{"empty, floor above computed", 0, 9_999_999, 9_999_999},
+		{"target, floor above parent", parentGasLimit / 2, 20_000_000, 20_000_000},
+		{"above, floor above computed", 20_000_000, 50_000_000, 50_000_000},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := &types.Header{
+				Number:   common.Big32,
+				GasLimit: parentGasLimit,
+				GasUsed:  test.parentGasUsed,
+				BaseFee:  big.NewInt(parentBaseFee),
+				Time:     14,
+				Extra:    EncodeMinBaseFeeExtraData(denom, elasticity, test.minBaseFee),
+			}
+			if have, want := CalcBaseFee(jovianConfig(), parent, parent.Time+2), big.NewInt(test.expectedBaseFee); have.Cmp(want) != 0 {
+				t.Errorf("have %d  want %d", have, want)
+			}
+		})
+	}
+
+	t.Run("pre-Jovian ignores very low base fee", func(t *testing.T) {
+		parent := &types.Header{
+			Number:   common.Big32,
+			GasLimit: parentGasLimit,
+			GasUsed:  0,
+			BaseFee:  big.NewInt(10),
+			Time:     12,
+			Extra:    EncodeHoloceneExtraData(1, elasticity),
+		}
+		if have := CalcBaseFee(jovianConfig(), parent, parent.Time+2); have.Sign() != 0 {
+			t.Errorf("have %d  want 0", have)
+		}
+	})
+
+	t.Run("Jovian activation block uses Holocene parent extraData", func(t *testing.T) {
+		parent := &types.Header{
+			Number:   common.Big32,
+			GasLimit: parentGasLimit,
+			GasUsed:  10_000_000,
+			BaseFee:  big.NewInt(parentBaseFee),
+			Time:     12,
+			Extra:    EncodeHoloceneExtraData(denom, elasticity),
+		}
+		cfg := jovianConfig()
+		jt := uint64(12)
+		cfg.JovianTime = &jt
+		if have, want := CalcBaseFee(cfg, parent, parent.Time+2), big.NewInt(9_666_667); have.Cmp(want) != 0 {
+			t.Errorf("have %d  want %d", have, want)
+		}
+	})
+}
+
+func TestMinBaseFeeExtraData(t *testing.T) {
+	extra := EncodeMinBaseFeeExtraData(250, 6, 0x0102030405060708)
+	want := []byte{1, 0, 0, 0, 250, 0, 0, 0, 6, 1, 2, 3, 4, 5, 6, 7, 8}
+	if !bytes.Equal(extra, want) {
+		t.Fatalf("encoding mismatch: have %x want %x", extra, want)
+	}
+	if err := ValidateMinBaseFeeExtraData(extra); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	d, e, m := DecodeMinBaseFeeExtraData(extra)
+	if d != 250 || e != 6 || m == nil || *m != 0x0102030405060708 {
+		t.Fatalf("decoding mismatch: have %d %d %v", d, e, m)
+	}
+
+	d, e, m = DecodeMinBaseFeeExtraData(EncodeHoloceneExtraData(250, 6))
+	if d != 250 || e != 6 || m != nil {
+		t.Fatalf("holocene decoding mismatch: have %d %d %v", d, e, m)
+	}
+	if d, e, m = DecodeMinBaseFeeExtraData([]byte{1, 2, 3}); d != 0 || e != 0 || m != nil {
+		t.Fatalf("invalid decoding mismatch: have %d %d %v", d, e, m)
+	}
+
+	for name, bad := range map[string][]byte{
+		"holocene format":  EncodeHoloceneExtraData(250, 6),
+		"wrong version":    append([]byte{0}, extra[1:]...),
+		"zero denominator": EncodeMinBaseFeeExtraData(0, 6, 1),
+		"too long":         append(bytes.Clone(extra), 0),
+	} {
+		if err := ValidateMinBaseFeeExtraData(bad); err == nil {
+			t.Errorf("%s: expected validation error", name)
 		}
 	}
 }
