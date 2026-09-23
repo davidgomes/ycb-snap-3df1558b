@@ -1776,3 +1776,27 @@ password. All of these options come from their similarly-named [Django settings]
 #### [`PAPERLESS_EMAIL_USE_SSL=<bool>`](#PAPERLESS_EMAIL_USE_SSL) {#PAPERLESS_EMAIL_USE_SSL}
 
 : Defaults to false.
+
+## Webhooks
+
+These settings restrict where the webhook workflow action may send requests. Webhooks never follow
+redirects, ignore any user-supplied `Host` header and time out after 5 seconds.
+
+#### [`PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES=<str>`](#PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES) {#PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES}
+
+: A comma-separated list of URL schemes webhooks may use.
+
+    Defaults to `http,https`.
+
+#### [`PAPERLESS_WEBHOOKS_ALLOWED_PORTS=<str>`](#PAPERLESS_WEBHOOKS_ALLOWED_PORTS) {#PAPERLESS_WEBHOOKS_ALLOWED_PORTS}
+
+: A comma-separated list of destination ports webhooks may use, e.g. `80,443`.
+
+    Defaults to empty, which allows all ports.
+
+#### [`PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS=<bool>`](#PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS) {#PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS}
+
+: If set to false, webhooks may only be sent to hosts which resolve to public IP addresses.
+Private, loopback, link-local and other non-public destinations (e.g. `localhost`) are blocked.
+
+    Defaults to true, which allows internal requests.

@@ -1404,6 +1404,25 @@ EMPTY_TRASH_DELAY = max(__get_int("PAPERLESS_EMPTY_TRASH_DELAY", 30), 1)
 
 
 ###############################################################################
+# Webhooks                                                                    #
+###############################################################################
+WEBHOOKS_ALLOWED_SCHEMES: Final[set[str]] = {
+    s.lower()
+    for s in __get_list(
+        "PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES",
+        ["http", "https"],
+    )
+}
+WEBHOOKS_ALLOWED_PORTS: Final[set[int]] = {
+    int(p) for p in __get_list("PAPERLESS_WEBHOOKS_ALLOWED_PORTS", [])
+}
+WEBHOOKS_ALLOW_INTERNAL_REQUESTS: Final[bool] = __get_boolean(
+    "PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS",
+    "true",
+)
+
+
+###############################################################################
 # Oauth Email                                                                 #
 ###############################################################################
 OAUTH_CALLBACK_BASE_URL = os.getenv("PAPERLESS_OAUTH_CALLBACK_BASE_URL")

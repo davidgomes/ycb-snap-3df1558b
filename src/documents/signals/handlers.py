@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import shutil
+import socket
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import httpx
 from celery import shared_task
@@ -660,6 +663,63 @@ def run_workflows_updated(sender, document: Document, logging_group=None, **kwar
     )
 
 
+WEBHOOK_TIMEOUT_SECONDS = 5.0
+
+
+def _is_public_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return not (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+def _resolve_ips(host: str) -> set[str]:
+    try:
+        return {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except (OSError, UnicodeError):
+        return set()
+
+
+def _validate_webhook_url(url: str) -> None:
+    """
+    Raises ValueError if the webhook URL does not point at an allowed
+    destination (scheme, hostname, port and, unless internal requests are
+    allowed, a public IP address).
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in settings.WEBHOOKS_ALLOWED_SCHEMES or not parsed.hostname:
+        logger.warning(f"Webhook blocked, invalid scheme or hostname: {url}")
+        raise ValueError("Invalid URL scheme or hostname.")
+
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as e:
+        logger.warning(f"Webhook blocked, invalid port: {url}")
+        raise ValueError("Invalid URL port.") from e
+    if settings.WEBHOOKS_ALLOWED_PORTS and port not in settings.WEBHOOKS_ALLOWED_PORTS:
+        logger.warning(f"Webhook blocked, port {port} not permitted: {url}")
+        raise ValueError("Destination port not permitted.")
+
+    if settings.WEBHOOKS_ALLOW_INTERNAL_REQUESTS:
+        return
+
+    ips = _resolve_ips(parsed.hostname)
+    if not ips or not all(_is_public_ip(ip) for ip in ips):
+        logger.warning(f"Webhook blocked, destination not allowed: {url}")
+        raise ValueError("Destination host is not allowed.")
+
+
 @shared_task(
     retry_backoff=True,
     autoretry_for=(httpx.HTTPStatusError,),
@@ -674,11 +734,19 @@ def send_webhook(
     *,
     as_json: bool = False,
 ):
+    _validate_webhook_url(url)
+
     try:
         post_args = {
             "url": url,
-            "headers": headers,
-            "files": files,
+            # httpx derives Host from the URL; a user-supplied one could route
+            # the request to a different virtual host than the validated one
+            "headers": {
+                k: v for k, v in (headers or {}).items() if k.lower() != "host"
+            },
+            "files": files or None,
+            "timeout": WEBHOOK_TIMEOUT_SECONDS,
+            "follow_redirects": False,
         }
         if as_json:
             post_args["json"] = data
@@ -687,18 +755,14 @@ def send_webhook(
         else:
             post_args["content"] = data
 
-        httpx.post(
-            **post_args,
-        ).raise_for_status()
-        logger.info(
-            f"Webhook sent to {url}",
-        )
-    except Exception as e:
-        logger.error(
-            f"Failed attempt sending webhook to {url}: {e}",
-        )
-        raise e
-
+        response = httpx.post(**post_args)
+        # Not an HTTPStatusError, so the task fails without being retried
+        if response.status_code in range(300, 400):
+            raise httpx.TooManyRedirects(
+                f"Webhook redirects are not followed (got {response.status_code})",
+                request=response.request,
+            )
+        response.raise_for_status()
         logger.info(
             f"Webhook sent to {url}",
         )
