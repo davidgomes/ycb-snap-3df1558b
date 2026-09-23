@@ -495,7 +495,32 @@ class StoragePathField(serializers.PrimaryKeyRelatedField):
         return StoragePath.objects.all()
 
 
+# Select options gained stable ids in this API version. Older versions still
+# expose the previous list of labels, and document values as option indexes.
+SELECT_CUSTOM_FIELD_API_VERSION = 7
+
+
+def _api_version_from_context(context) -> int:
+    """
+    Return the request API version, or the configured default.
+
+    Serializers are sometimes built outside a request (and tests may pass a
+    stand-in request). Non-numeric versions fall back to the default, which
+    is the newest supported version.
+    """
+    request = context.get("request") if context else None
+    version = getattr(request, "version", None) if request is not None else None
+    try:
+        return int(version)
+    except (TypeError, ValueError):
+        return int(settings.REST_FRAMEWORK["DEFAULT_VERSION"])
+
+
 class CustomFieldSerializer(serializers.ModelSerializer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.api_version = _api_version_from_context(self.context)
+
     data_type = serializers.ChoiceField(
         choices=CustomField.FieldDataType,
         read_only=False,
@@ -574,6 +599,55 @@ class CustomFieldSerializer(serializers.ModelSerializer):
                 {"error": "extra_data.default_currency must be a 3-character string"},
             )
         return super().validate(attrs)
+
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+
+        data_type = ret.get(
+            "data_type",
+            getattr(self.instance, "data_type", None),
+        )
+        extra_data = ret.get("extra_data")
+        if (
+            self.api_version < SELECT_CUSTOM_FIELD_API_VERSION
+            and data_type == CustomField.FieldDataType.SELECT
+            and isinstance(extra_data, dict)
+            and isinstance(extra_data.get("select_options"), list)
+        ):
+            # Legacy clients send a list of labels. Store the current
+            # {id, label} objects, keeping an id when one was already provided.
+            normalized_options = []
+            for option in extra_data["select_options"]:
+                if isinstance(option, str):
+                    normalized_options.append(
+                        {
+                            "label": option,
+                            "id": get_random_string(length=16),
+                        },
+                    )
+                else:
+                    normalized_options.append(option)
+            extra_data["select_options"] = normalized_options
+
+        return ret
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+
+        extra_data = ret.get("extra_data")
+        if (
+            self.api_version < SELECT_CUSTOM_FIELD_API_VERSION
+            and instance.data_type == CustomField.FieldDataType.SELECT
+            and isinstance(extra_data, dict)
+            and isinstance(extra_data.get("select_options"), list)
+        ):
+            # Convert the select options with ids to a list of strings
+            extra_data["select_options"] = [
+                option["label"] if isinstance(option, dict) else option
+                for option in extra_data["select_options"]
+            ]
+
+        return ret
 
 
 class ReadWriteSerializerMethodField(serializers.SerializerMethodField):
@@ -681,6 +755,48 @@ class CustomFieldInstanceSerializer(serializers.ModelSerializer):
                     )
 
         return data
+
+    def _api_version(self) -> int:
+        return _api_version_from_context(self.context)
+
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+
+        field = ret.get("field")
+        value = ret.get("value")
+        if (
+            self._api_version() < SELECT_CUSTOM_FIELD_API_VERSION
+            and field is not None
+            and getattr(field, "data_type", None) == CustomField.FieldDataType.SELECT
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            # Convert the index of the option into its stable id.
+            options = (field.extra_data or {}).get("select_options") or []
+            if 0 <= value < len(options) and isinstance(options[value], dict):
+                ret["value"] = options[value]["id"]
+
+        return ret
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+
+        if (
+            self._api_version() < SELECT_CUSTOM_FIELD_API_VERSION
+            and instance.field.data_type == CustomField.FieldDataType.SELECT
+        ):
+            # Return the index of the option in select_options.
+            options = (instance.field.extra_data or {}).get("select_options") or []
+            ret["value"] = next(
+                (
+                    idx
+                    for idx, option in enumerate(options)
+                    if isinstance(option, dict) and option.get("id") == instance.value
+                ),
+                None,
+            )
+
+        return ret
 
     def reflect_doclinks(
         self,
