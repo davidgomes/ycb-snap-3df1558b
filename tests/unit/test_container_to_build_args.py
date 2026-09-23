@@ -210,11 +210,77 @@ class TestContainerToBuildArgs(unittest.TestCase):
         with self.assertRaises(OSError):
             container_to_build_args(c, cnt, args, lambda path: False)
 
-    def test_context_invalid_git_url_git_is_not_suffix(self):
+    def test_context_git_url_without_git_suffix(self):
         c = create_compose_mock()
 
         cnt = get_minimal_container()
-        cnt['build']['context'] = "https://github.com/test_repo.git/not_suffix"
+        cnt['build']['context'] = "https://github.com/test_repo"
+        cnt['build']['dockerfile'] = "Dockerfile.test"
+        args = get_minimal_args()
+
+        args = container_to_build_args(c, cnt, args, lambda path: False)
+        self.assertEqual(
+            args,
+            [
+                '-t',
+                'new-image',
+                '--no-cache',
+                '--pull-always',
+                'https://github.com/test_repo',
+            ],
+        )
+
+    def test_context_local_dir_with_git_suffix(self):
+        c = create_compose_mock()
+
+        cnt = get_minimal_container()
+        cnt['build']['context'] = "/home/user/test.git"
+        args = get_minimal_args()
+
+        args = container_to_build_args(c, cnt, args, lambda path: True)
+        self.assertEqual(
+            args,
+            [
+                '-f',
+                '/home/user/test.git/Containerfile',
+                '-t',
+                'new-image',
+                '--no-cache',
+                '--pull-always',
+                '/home/user/test.git',
+            ],
+        )
+
+    def test_context_local_dir_with_git_suffix_custom_dockerfile(self):
+        c = create_compose_mock()
+
+        cnt = get_minimal_container()
+        cnt['build']['context'] = "/home/user/test.git"
+        cnt['build']['dockerfile'] = "Dockerfile.test"
+        args = get_minimal_args()
+
+        args = container_to_build_args(
+            c, cnt, args, lambda path: path == "/home/user/test.git/Dockerfile.test"
+        )
+        self.assertEqual(
+            args,
+            [
+                '-f',
+                '/home/user/test.git/Dockerfile.test',
+                '-t',
+                'new-image',
+                '--no-cache',
+                '--pull-always',
+                '/home/user/test.git',
+            ],
+        )
+
+    def test_context_local_dir_with_git_suffix_missing_dockerfile(self):
+        c = create_compose_mock()
+
+        cnt = get_minimal_container()
+        cnt['build']['context'] = "/home/user/test.git"
+        cnt['build']['dockerfile'] = "Dockerfile.test"
         args = get_minimal_args()
 
         with self.assertRaises(OSError):

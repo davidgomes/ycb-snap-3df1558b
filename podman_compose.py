@@ -25,7 +25,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import urllib.parse
 from asyncio import Task
 from enum import Enum
 from typing import Any
@@ -1799,7 +1798,7 @@ def normalize_service_final(service: dict[str, Any], project_dir: str) -> dict[s
         build = service["build"]
         context = build if isinstance(build, str) else build.get("context", ".")
 
-        if not is_path_git_url(context):
+        if not is_context_git_url(context):
             context = os.path.normpath(os.path.join(project_dir, context))
         if not isinstance(service["build"], dict):
             service["build"] = {}
@@ -2788,9 +2787,23 @@ async def compose_push(compose: PodmanCompose, args: argparse.Namespace) -> None
         await compose.podman.run([], "push", [cnt["image"]])
 
 
-def is_path_git_url(path: str) -> bool:
-    r = urllib.parse.urlparse(path)
-    return r.scheme == 'git' or r.path.endswith('.git')
+GIT_URL_SCHEMES = ("git", "git+ssh", "ssh+git", "ssh", "http", "https", "ftp", "ftps", "file")
+
+
+def is_context_git_url(path: str) -> bool:
+    scheme, sep, _ = path.partition("://")
+    if sep:
+        return scheme.lower() in GIT_URL_SCHEMES
+    # Like git, recognize the scp-like syntax `[user@]host:path/to/repo` only when no slash
+    # precedes the first colon, so a local path such as `./foo:bar` is never taken for a URL.
+    host = re.split(r"[:/\\]", path, maxsplit=1)[0]
+    if path[len(host) :].startswith(":"):
+        # a single letter before the colon is a Windows drive, e.g. `C:\path`
+        return len(host) > 1
+    return re.fullmatch(r"[^@]+@[^@]+", host) is not None
+
+
+is_path_git_url = is_context_git_url
 
 
 def adjust_build_ssh_key_paths(compose: PodmanCompose, agent_or_key: str) -> str:
@@ -2835,7 +2848,7 @@ def container_to_build_args(
 
     build_args = []
 
-    if not is_path_git_url(ctx):
+    if not is_context_git_url(ctx):
         custom_dockerfile_given = False
         if dockerfile:
             dockerfile = os.path.join(ctx, dockerfile)

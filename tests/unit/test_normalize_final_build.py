@@ -96,6 +96,25 @@ class TestNormalizeFinalBuild(unittest.TestCase):
                 },
             },
         ),
+        (
+            {
+                "build": {"context": "./test.git", "dockerfile": "Dockerfile.test"},
+            },
+            {
+                "build": {
+                    "context": os.path.join(cwd, "test.git"),
+                    "dockerfile": "Dockerfile.test",
+                },
+            },
+        ),
+        (
+            {"build": "https://github.com/containers/podman-compose"},
+            {
+                "build": {
+                    "context": "https://github.com/containers/podman-compose",
+                },
+            },
+        ),
     ]
 
     @parameterized.expand(cases_simple_normalization)
