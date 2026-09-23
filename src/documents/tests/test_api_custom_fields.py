@@ -272,6 +272,334 @@ class TestCustomFieldsAPI(DirectoriesMixin, APITestCase):
         doc.refresh_from_db()
         self.assertEqual(doc.custom_fields.first().value, None)
 
+    def test_create_custom_field_select_legacy_options_latest_version(self):
+        """
+        GIVEN:
+            - Nothing
+        WHEN:
+            - API request with the current API version to create a select field
+              with select options in the legacy (list of strings) format
+        THEN:
+            - HTTP 400 is returned
+        """
+        resp = self.client.post(
+            self.ENDPOINT,
+            headers={"Accept": "application/json; version=7"},
+            data=json.dumps(
+                {
+                    "data_type": "select",
+                    "name": "Select Field",
+                    "extra_data": {"select_options": ["Option 1", "Option 2"]},
+                },
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_custom_field_select_old_version(self):
+        """
+        GIVEN:
+            - Nothing
+        WHEN:
+            - API post request is made for custom fields with api version header < 7
+            - API get requests are made for custom fields with api version header < 7
+            - API get request is made for custom fields with api version header 7
+        THEN:
+            - The select options are created with unique ids
+            - The select options are returned in the old format for version < 7
+            - The select options are returned in the new format for version 7
+        """
+        resp = self.client.post(
+            self.ENDPOINT,
+            headers={"Accept": "application/json; version=6"},
+            data=json.dumps(
+                {
+                    "data_type": "select",
+                    "name": "Select Field",
+                    "extra_data": {
+                        "select_options": [
+                            "Option 1",
+                            "Option 2",
+                        ],
+                    },
+                },
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            resp.json()["extra_data"]["select_options"],
+            ["Option 1", "Option 2"],
+        )
+
+        field = CustomField.objects.get(name="Select Field")
+        self.assertEqual(
+            field.extra_data["select_options"],
+            [
+                {"label": "Option 1", "id": ANY},
+                {"label": "Option 2", "id": ANY},
+            ],
+        )
+        self.assertNotEqual(
+            field.extra_data["select_options"][0]["id"],
+            field.extra_data["select_options"][1]["id"],
+        )
+
+        resp = self.client.get(
+            f"{self.ENDPOINT}{field.id}/",
+            headers={"Accept": "application/json; version=6"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            resp.json()["extra_data"]["select_options"],
+            ["Option 1", "Option 2"],
+        )
+
+        resp = self.client.get(
+            self.ENDPOINT,
+            headers={"Accept": "application/json; version=6"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            resp.json()["results"][0]["extra_data"]["select_options"],
+            ["Option 1", "Option 2"],
+        )
+
+        resp = self.client.get(
+            f"{self.ENDPOINT}{field.id}/",
+            headers={"Accept": "application/json; version=7"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            resp.json()["extra_data"]["select_options"],
+            field.extra_data["select_options"],
+        )
+
+    def test_custom_field_select_old_version_update_keeps_ids(self):
+        """
+        GIVEN:
+            - Select custom field with document instances using its options
+        WHEN:
+            - API patch requests with api version header < 7 reorder and add,
+              rename and remove options using the legacy format
+        THEN:
+            - Existing options keep their ids, matched by label first and then
+              by position
+            - Document values survive except for the removed option
+        """
+        custom_field_select = CustomField.objects.create(
+            name="Select Field",
+            data_type=CustomField.FieldDataType.SELECT,
+            extra_data={
+                "select_options": [
+                    {"label": "Option 1", "id": "abc-123"},
+                    {"label": "Option 2", "id": "def-456"},
+                    {"label": "Option 3", "id": "ghi-789"},
+                ],
+            },
+        )
+        doc1 = Document.objects.create(
+            title="WOW",
+            content="the content",
+            checksum="123",
+            mime_type="application/pdf",
+        )
+        doc2 = Document.objects.create(
+            title="WOW2",
+            content="the content2",
+            checksum="1234",
+            mime_type="application/pdf",
+        )
+        CustomFieldInstance.objects.create(
+            document=doc1,
+            field=custom_field_select,
+            value_select="abc-123",
+        )
+        CustomFieldInstance.objects.create(
+            document=doc2,
+            field=custom_field_select,
+            value_select="def-456",
+        )
+
+        def patch_options(options):
+            resp = self.client.patch(
+                f"{self.ENDPOINT}{custom_field_select.id}/",
+                headers={"Accept": "application/json; version=6"},
+                data=json.dumps({"extra_data": {"select_options": options}}),
+                content_type="application/json",
+            )
+            self.assertEqual(resp.status_code, status.HTTP_200_OK)
+            self.assertEqual(resp.json()["extra_data"]["select_options"], options)
+            custom_field_select.refresh_from_db()
+            return custom_field_select.extra_data["select_options"]
+
+        # Reorder and append
+        options = patch_options(["Option 3", "Option 1", "Option 2", "Option 4"])
+        self.assertEqual(
+            options,
+            [
+                {"label": "Option 3", "id": "ghi-789"},
+                {"label": "Option 1", "id": "abc-123"},
+                {"label": "Option 2", "id": "def-456"},
+                {"label": "Option 4", "id": ANY},
+            ],
+        )
+        new_option_id = options[3]["id"]
+        self.assertNotIn(new_option_id, ["abc-123", "def-456", "ghi-789"])
+
+        # Rename in place
+        options = patch_options(["Option 3", "Option 1", "Second", "Option 4"])
+        self.assertEqual(
+            options,
+            [
+                {"label": "Option 3", "id": "ghi-789"},
+                {"label": "Option 1", "id": "abc-123"},
+                {"label": "Second", "id": "def-456"},
+                {"label": "Option 4", "id": new_option_id},
+            ],
+        )
+
+        # Remove
+        options = patch_options(["Option 3", "Second", "Option 4"])
+        self.assertEqual(
+            options,
+            [
+                {"label": "Option 3", "id": "ghi-789"},
+                {"label": "Second", "id": "def-456"},
+                {"label": "Option 4", "id": new_option_id},
+            ],
+        )
+
+        doc1.refresh_from_db()
+        doc2.refresh_from_db()
+        self.assertIsNone(doc1.custom_fields.first().value)
+        self.assertEqual(doc2.custom_fields.first().value, "def-456")
+
+    def test_custom_field_select_value_old_version(self):
+        """
+        GIVEN:
+            - Existing document and select custom field
+        WHEN:
+            - API patch request is made to set the field value for the document
+              with api version header < 7, using the index of the option
+            - API get request is made for the document with api version header < 7
+            - API get request is made for the document with api version header 7
+        THEN:
+            - The option id is stored
+            - The select value is returned as the index of the option for version < 7
+            - The select value is returned as the option id for version 7
+        """
+        custom_field_select = CustomField.objects.create(
+            name="Select Field",
+            data_type=CustomField.FieldDataType.SELECT,
+            extra_data={
+                "select_options": [
+                    {"label": "Option 1", "id": "abc-123"},
+                    {"label": "Option 2", "id": "def-456"},
+                ],
+            },
+        )
+
+        doc = Document.objects.create(
+            title="WOW",
+            content="the content",
+            checksum="123",
+            mime_type="application/pdf",
+        )
+
+        resp = self.client.patch(
+            f"/api/documents/{doc.id}/",
+            headers={"Accept": "application/json; version=6"},
+            data=json.dumps(
+                {
+                    "custom_fields": [
+                        {"field": custom_field_select.id, "value": 1},
+                    ],
+                },
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.json()["custom_fields"][0]["value"], 1)
+        doc.refresh_from_db()
+        self.assertEqual(doc.custom_fields.first().value, "def-456")
+
+        resp = self.client.get(
+            f"/api/documents/{doc.id}/",
+            headers={"Accept": "application/json; version=6"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.json()["custom_fields"][0]["value"], 1)
+
+        resp = self.client.get(
+            f"/api/documents/{doc.id}/",
+            headers={"Accept": "application/json; version=7"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.json()["custom_fields"][0]["value"], "def-456")
+
+        resp = self.client.patch(
+            f"/api/documents/{doc.id}/",
+            headers={"Accept": "application/json; version=6"},
+            data=json.dumps(
+                {
+                    "custom_fields": [
+                        {"field": custom_field_select.id, "value": None},
+                    ],
+                },
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNone(resp.json()["custom_fields"][0]["value"])
+        doc.refresh_from_db()
+        self.assertIsNone(doc.custom_fields.first().value)
+
+    def test_custom_field_select_value_old_version_invalid(self):
+        """
+        GIVEN:
+            - Existing document and select custom field
+        WHEN:
+            - API patch requests are made with api version header < 7 to set the
+              field value to an index which is out of range
+        THEN:
+            - HTTP 400 is returned
+        """
+        custom_field_select = CustomField.objects.create(
+            name="Select Field",
+            data_type=CustomField.FieldDataType.SELECT,
+            extra_data={
+                "select_options": [
+                    {"label": "Option 1", "id": "abc-123"},
+                    {"label": "Option 2", "id": "def-456"},
+                ],
+            },
+        )
+
+        doc = Document.objects.create(
+            title="WOW",
+            content="the content",
+            checksum="123",
+            mime_type="application/pdf",
+        )
+
+        for value in [2, -1, True]:
+            resp = self.client.patch(
+                f"/api/documents/{doc.id}/",
+                headers={"Accept": "application/json; version=6"},
+                data=json.dumps(
+                    {
+                        "custom_fields": [
+                            {"field": custom_field_select.id, "value": value},
+                        ],
+                    },
+                ),
+                content_type="application/json",
+            )
+            self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, value)
+
+        self.assertEqual(CustomFieldInstance.objects.count(), 0)
+
     def test_create_custom_field_monetary_validation(self):
         """
         GIVEN:

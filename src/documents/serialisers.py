@@ -495,7 +495,61 @@ class StoragePathField(serializers.PrimaryKeyRelatedField):
         return StoragePath.objects.all()
 
 
-class CustomFieldSerializer(serializers.ModelSerializer):
+class ApiVersionMixin:
+    @property
+    def api_version(self) -> int:
+        request = self.context.get("request")
+        try:
+            return int(request.version)
+        except (AttributeError, TypeError, ValueError):
+            return int(settings.REST_FRAMEWORK["DEFAULT_VERSION"])
+
+
+def legacy_select_options_to_objects(
+    options: list,
+    existing_options: list[dict],
+) -> list:
+    """
+    API versions < 7 represent select options as a plain list of labels. Convert
+    those labels to option objects, reusing the ids of the field's existing options
+    so that document values referencing them survive the update. Existing options
+    are matched by label first, then by position (the index-based semantics of the
+    old API, e.g. an option renamed in place).
+    """
+    result = list(options)
+    available = {option["id"]: option["label"] for option in existing_options}
+    for option in options:
+        if isinstance(option, dict):
+            available.pop(option.get("id"), None)
+
+    unmatched = []
+    for index, option in enumerate(options):
+        if not isinstance(option, str):
+            continue
+        option_id = next(
+            (id_ for id_, label in available.items() if label == option),
+            None,
+        )
+        if option_id is None:
+            unmatched.append(index)
+        else:
+            del available[option_id]
+            result[index] = {"id": option_id, "label": option}
+
+    for index in unmatched:
+        option_id = (
+            existing_options[index]["id"]
+            if index < len(existing_options)
+            and existing_options[index]["id"] in available
+            else get_random_string(length=16)
+        )
+        available.pop(option_id, None)
+        result[index] = {"id": option_id, "label": options[index]}
+
+    return result
+
+
+class CustomFieldSerializer(ApiVersionMixin, serializers.ModelSerializer):
     data_type = serializers.ChoiceField(
         choices=CustomField.FieldDataType,
         read_only=False,
@@ -545,7 +599,9 @@ class CustomFieldSerializer(serializers.ModelSerializer):
                 or not isinstance(attrs["extra_data"]["select_options"], list)
                 or len(attrs["extra_data"]["select_options"]) == 0
                 or not all(
-                    len(option.get("label", "")) > 0
+                    isinstance(option, dict)
+                    and isinstance(option.get("label"), str)
+                    and len(option["label"]) > 0
                     for option in attrs["extra_data"]["select_options"]
                 )
             ):
@@ -575,6 +631,52 @@ class CustomFieldSerializer(serializers.ModelSerializer):
             )
         return super().validate(attrs)
 
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+
+        data_type = ret.get("data_type", getattr(self.instance, "data_type", None))
+        extra_data = ret.get("extra_data")
+        if (
+            self.api_version < 7
+            and data_type == CustomField.FieldDataType.SELECT
+            and isinstance(extra_data, dict)
+            and isinstance(extra_data.get("select_options"), list)
+        ):
+            existing_options = []
+            if (
+                self.instance is not None
+                and self.instance.data_type == CustomField.FieldDataType.SELECT
+            ):
+                existing_options = (self.instance.extra_data or {}).get(
+                    "select_options",
+                ) or []
+            extra_data["select_options"] = legacy_select_options_to_objects(
+                extra_data["select_options"],
+                existing_options,
+            )
+
+        return ret
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+
+        extra_data = ret.get("extra_data")
+        if (
+            self.api_version < 7
+            and instance.data_type == CustomField.FieldDataType.SELECT
+            and isinstance(extra_data, dict)
+            and isinstance(extra_data.get("select_options"), list)
+        ):
+            # extra_data is the instance's own dict, it must not be modified in place
+            ret["extra_data"] = {
+                **extra_data,
+                "select_options": [
+                    option["label"] for option in extra_data["select_options"]
+                ],
+            }
+
+        return ret
+
 
 class ReadWriteSerializerMethodField(serializers.SerializerMethodField):
     """
@@ -590,7 +692,7 @@ class ReadWriteSerializerMethodField(serializers.SerializerMethodField):
         return {self.field_name: data}
 
 
-class CustomFieldInstanceSerializer(serializers.ModelSerializer):
+class CustomFieldInstanceSerializer(ApiVersionMixin, serializers.ModelSerializer):
     field = serializers.PrimaryKeyRelatedField(queryset=CustomField.objects.all())
     value = ReadWriteSerializerMethodField(allow_null=True)
 
@@ -681,6 +783,51 @@ class CustomFieldInstanceSerializer(serializers.ModelSerializer):
                     )
 
         return data
+
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+
+        field: CustomField | None = ret.get("field")
+        value = ret.get("value")
+        # API versions < 7 identify the selected option by its index. Option ids
+        # (strings) are passed through and checked in validate()
+        if (
+            self.api_version < 7
+            and field is not None
+            and field.data_type == CustomField.FieldDataType.SELECT
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            select_options = (field.extra_data or {}).get("select_options") or []
+            if not 0 <= value < len(select_options):
+                raise serializers.ValidationError(
+                    "Value must be index of an element in "
+                    f"{[option['label'] for option in select_options]}",
+                )
+            ret["value"] = select_options[value]["id"]
+
+        return ret
+
+    def to_representation(self, instance: CustomFieldInstance):
+        ret = super().to_representation(instance)
+
+        if (
+            self.api_version < 7
+            and instance.field.data_type == CustomField.FieldDataType.SELECT
+        ):
+            select_options = (instance.field.extra_data or {}).get(
+                "select_options",
+            ) or []
+            ret["value"] = next(
+                (
+                    index
+                    for index, option in enumerate(select_options)
+                    if option["id"] == instance.value
+                ),
+                None,
+            )
+
+        return ret
 
     def reflect_doclinks(
         self,
