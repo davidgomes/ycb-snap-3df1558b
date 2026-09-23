@@ -108,18 +108,21 @@ class MailRuleSerializer(OwnedObjectSerializer):
         return instance
 
     def create(self, validated_data):
-        if "assign_tags" in validated_data:
-            assign_tags = validated_data.pop("assign_tags")
+        assign_tags = validated_data.pop("assign_tags", None)
         mail_rule = super().create(validated_data)
         if assign_tags:
             mail_rule.assign_tags.set(assign_tags)
         return mail_rule
 
     def validate(self, attrs):
-        if (
-            attrs["action"] == MailRule.MailAction.TAG
-            or attrs["action"] == MailRule.MailAction.MOVE
-        ) and attrs["action_parameter"] is None:
+        action = attrs.get("action", getattr(self.instance, "action", None))
+        if "action_parameter" in attrs:
+            action_parameter = attrs.get("action_parameter")
+        else:
+            action_parameter = getattr(self.instance, "action_parameter", None)
+        if action in {MailRule.MailAction.TAG, MailRule.MailAction.MOVE} and (
+            action_parameter is None or action_parameter == ""
+        ):
             raise serializers.ValidationError("An action parameter is required.")
 
         return attrs

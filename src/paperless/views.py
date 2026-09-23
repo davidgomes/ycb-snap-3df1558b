@@ -341,6 +341,8 @@ class ApplicationConfigurationViewSet(ModelViewSet):
 
     serializer_class = ApplicationConfigurationSerializer
     permission_classes = (IsAuthenticated, DjangoModelPermissions)
+    # Singleton: the row is created on first read and updated in place.
+    http_method_names = ["get", "put", "patch", "delete", "head", "options", "trace"]
 
 
 @extend_schema_view(

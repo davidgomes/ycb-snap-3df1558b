@@ -1763,6 +1763,8 @@ class UiSettingsViewSerializer(serializers.ModelSerializer):
         ]
 
     def validate_settings(self, settings):
+        if not isinstance(settings, dict):
+            raise serializers.ValidationError("Expected a dictionary")
         # we never save update checking backend setting
         if "update_checking" in settings:
             try:
