@@ -1708,3 +1708,18 @@ password. All of these options come from their similarly-named [Django settings]
 #### [`PAPERLESS_EMAIL_USE_SSL=<bool>`](#PAPERLESS_EMAIL_USE_SSL) {#PAPERLESS_EMAIL_USE_SSL}
 
 : Defaults to false.
+
+## Database read cache
+
+#### [`PAPERLESS_DB_READ_CACHE_ENABLED=<bool>`](#PAPERLESS_DB_READ_CACHE_ENABLED) {#PAPERLESS_DB_READ_CACHE_ENABLED}
+
+: Cache database query results in Redis (via django-cachalot). Clear it with
+`manage.py invalidate_cachalot`. Defaults to false.
+
+#### [`PAPERLESS_READ_CACHE_REDIS_URL=<url>`](#PAPERLESS_READ_CACHE_REDIS_URL) {#PAPERLESS_READ_CACHE_REDIS_URL}
+
+: Redis URL for the read cache. Defaults to `PAPERLESS_REDIS` or `redis://localhost:6379`.
+
+#### [`PAPERLESS_READ_CACHE_TTL=<seconds>`](#PAPERLESS_READ_CACHE_TTL) {#PAPERLESS_READ_CACHE_TTL}
+
+: Cache entry lifetime. Defaults to 3600; capped at 31536000; values <= 0 use the default.

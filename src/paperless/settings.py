@@ -336,6 +336,10 @@ INSTALLED_APPS = [
 if DEBUG:
     INSTALLED_APPS.append("channels")
 
+_CACHALOT_ENABLED = __get_boolean("PAPERLESS_DB_READ_CACHE_ENABLED", default="no")
+if _CACHALOT_ENABLED:
+    INSTALLED_APPS.insert(0, "cachalot")
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "paperless.auth.PaperlessBasicAuthentication",
@@ -913,6 +917,39 @@ CACHES = {
         "LOCATION": _CHANNELS_REDIS_URL,
         "KEY_PREFIX": os.getenv("PAPERLESS_REDIS_PREFIX", ""),
     },
+}
+
+
+
+def _parse_cachalot_settings():
+    ttl = __get_int("PAPERLESS_READ_CACHE_TTL", 3600)
+    ttl = min(ttl, 31536000) if ttl > 0 else 3600
+    _, redis_url = _parse_redis_url(
+        os.getenv("PAPERLESS_READ_CACHE_REDIS_URL", _CHANNELS_REDIS_URL),
+    )
+    return {
+        "CACHALOT_CACHE": "read-cache",
+        "CACHALOT_TIMEOUT": ttl,
+        "CACHALOT_QUERY_KEYGEN": "paperless.db_cache.custom_get_query_cache_key",
+        "CACHALOT_TABLE_KEYGEN": "paperless.db_cache.custom_get_table_cache_key",
+        "CACHALOT_FINAL_SQL_CHECK": True,
+        "CACHE_BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "CACHE_LOCATION": redis_url,
+        "CACHE_KEY_PREFIX": os.getenv("PAPERLESS_REDIS_PREFIX", ""),
+    }
+
+
+cachalot_settings = _parse_cachalot_settings()
+CACHALOT_ENABLED = _CACHALOT_ENABLED
+CACHALOT_CACHE = cachalot_settings["CACHALOT_CACHE"]
+CACHALOT_TIMEOUT = cachalot_settings["CACHALOT_TIMEOUT"]
+CACHALOT_QUERY_KEYGEN = cachalot_settings["CACHALOT_QUERY_KEYGEN"]
+CACHALOT_TABLE_KEYGEN = cachalot_settings["CACHALOT_TABLE_KEYGEN"]
+CACHALOT_FINAL_SQL_CHECK = cachalot_settings["CACHALOT_FINAL_SQL_CHECK"]
+CACHES["read-cache"] = {
+    "BACKEND": cachalot_settings["CACHE_BACKEND"],
+    "LOCATION": cachalot_settings["CACHE_LOCATION"],
+    "KEY_PREFIX": cachalot_settings["CACHE_KEY_PREFIX"],
 }
 
 if DEBUG and os.getenv("PAPERLESS_CACHE_BACKEND") is None:

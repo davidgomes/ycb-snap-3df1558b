@@ -1,0 +1,12 @@
+from cachalot.utils import get_query_cache_key
+from cachalot.utils import get_table_cache_key
+
+PREFIX = "pl_cachalot_"
+
+
+def custom_get_query_cache_key(compiler):
+    return PREFIX + get_query_cache_key(compiler)
+
+
+def custom_get_table_cache_key(db_alias, table):
+    return PREFIX + get_table_cache_key(db_alias, table)
