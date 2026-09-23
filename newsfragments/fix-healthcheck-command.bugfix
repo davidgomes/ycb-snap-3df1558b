@@ -1,0 +1,1 @@
+Fixed healthcheck commands being passed to podman as broken `/bin/sh -c` strings; they are now passed as JSON arrays.
