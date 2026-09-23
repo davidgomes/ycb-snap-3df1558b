@@ -313,11 +313,29 @@ var (
 	TestRules = TestChainConfig.Rules(new(big.Int), false, 0)
 
 	// OP-Stack chain config with bedrock starting a block 5, introduced for historical endpoint testing, largely based on the clique config
-	OptimismTestConfig = func() *ChainConfig {
+	OptimismTestCliqueConfig = func() *ChainConfig {
 		conf := *AllCliqueProtocolChanges // copy the config
 		conf.Clique = nil
 		conf.BedrockBlock = big.NewInt(5)
 		conf.Optimism = &OptimismConfig{EIP1559Elasticity: 50, EIP1559Denominator: 10}
+		return &conf
+	}()
+
+	// OP-Stack chain config with all production forks activated at genesis, based on the MergedTestChainConfig
+	OptimismTestConfig = func() *ChainConfig {
+		conf := *MergedTestChainConfig // copy the config
+		conf.BlobScheduleConfig = nil
+		conf.BedrockBlock = big.NewInt(0)
+		conf.RegolithTime = newUint64(0)
+		conf.CanyonTime = newUint64(0)
+		conf.EcotoneTime = newUint64(0)
+		conf.FjordTime = newUint64(0)
+		conf.GraniteTime = newUint64(0)
+		conf.HoloceneTime = newUint64(0)
+		conf.IsthmusTime = newUint64(0)
+		conf.InteropTime = nil
+		conf.JovianTime = nil
+		conf.Optimism = &OptimismConfig{EIP1559Elasticity: 50, EIP1559Denominator: 10, EIP1559DenominatorCanyon: newUint64(250)}
 		return &conf
 	}()
 )
