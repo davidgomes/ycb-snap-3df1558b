@@ -85,6 +85,23 @@ def try_float(i: int | str, fallback: float | None = None) -> float | None:
     return fallback
 
 
+def try_parse_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in ('true', '1', 'yes', 'on'):
+            return True
+        if value in ('false', '0', 'no', 'off', ''):
+            return False
+    if isinstance(value, int):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return None
+
+
 log = logging.getLogger(__name__)
 
 
@@ -370,8 +387,10 @@ def default_network_name_for_project(compose: PodmanCompose, net: str, is_ext: A
 
     assert compose.project_name is not None
 
-    default_net_name_compat = compose.x_podman.get("default_net_name_compat", False)
-    if default_net_name_compat is True:
+    default_net_name_compat = compose.x_podman.get(
+        PodmanCompose.XPodmanSettingKey.DEFAULT_NET_NAME_COMPAT, False
+    )
+    if try_parse_bool(default_net_name_compat) is True:
         return f"{compose.project_name.replace('-', '')}_{net}"
     return f"{compose.project_name}_{net}"
 
@@ -1968,6 +1987,12 @@ COMPOSE_DEFAULT_LS = [
 
 
 class PodmanCompose:
+    class XPodmanSettingKey(Enum):
+        DEFAULT_NET_NAME_COMPAT = "default_net_name_compat"
+        DEFAULT_NET_BEHAVIOR_COMPAT = "default_net_behavior_compat"
+        IN_POD = "in_pod"
+        POD_ARGS = "pod_args"
+
     def __init__(self) -> None:
         self.podman: Podman
         self.podman_version: str | None = None
@@ -1988,7 +2013,7 @@ class PodmanCompose:
         self.services: dict[str, Any]
         self.all_services: set[Any] = set()
         self.prefer_volume_over_mount = True
-        self.x_podman: dict[str, Any] = {}
+        self.x_podman: dict[PodmanCompose.XPodmanSettingKey, Any] = {}
         self.merged_yaml: Any
         self.yaml_hash = ""
         self.console_colors = [
@@ -2059,18 +2084,61 @@ class PodmanCompose:
 
     def resolve_in_pod(self) -> bool:
         if self.global_args.in_pod in (None, ''):
-            self.global_args.in_pod = self.x_podman.get("in_pod", "1")
+            self.global_args.in_pod = self.x_podman.get(PodmanCompose.XPodmanSettingKey.IN_POD, "1")
         # otherwise use `in_pod` value provided by command line
         return self.global_args.in_pod
 
     def resolve_pod_args(self) -> list[str]:
         # Priorities:
         # - Command line --pod-args
+        # - PODMAN_COMPOSE_POD_ARGS environment variable
         # - docker-compose.yml x-podman.pod_args
         # - Default value
         if self.global_args.pod_args is not None:
             return shlex.split(self.global_args.pod_args)
-        return self.x_podman.get("pod_args", ["--infra=false", "--share="])
+        pod_args = self.x_podman.get(
+            PodmanCompose.XPodmanSettingKey.POD_ARGS, ["--infra=false", "--share="]
+        )
+        if isinstance(pod_args, str):
+            return shlex.split(pod_args)
+        return pod_args
+
+    def _parse_x_podman_settings(self, compose: dict[str, Any], environ: dict[str, str]) -> None:
+        # Priorities:
+        # - PODMAN_COMPOSE_* environment variables
+        # - docker-compose.yml x-podman
+        known_keys = {s.value: s for s in PodmanCompose.XPodmanSettingKey}
+
+        self.x_podman = {}
+
+        for k, v in compose.get("x-podman", {}).items():
+            known_key = known_keys.get(k)
+            if known_key:
+                self.x_podman[known_key] = v
+            else:
+                log.warning(
+                    "unknown x-podman key [%s] in compose file, supported keys: %s",
+                    k,
+                    ", ".join(known_keys.keys()),
+                )
+
+        env = {
+            key.removeprefix("PODMAN_COMPOSE_").lower(): value
+            for key, value in environ.items()
+            if key.startswith("PODMAN_COMPOSE_")
+            and key not in {"PODMAN_COMPOSE_PROVIDER", "PODMAN_COMPOSE_WARNING_LOGS"}
+        }
+
+        for k, v in env.items():
+            known_key = known_keys.get(k)
+            if known_key:
+                self.x_podman[known_key] = v
+            else:
+                log.warning(
+                    "unknown PODMAN_COMPOSE_ key [%s] in environment, supported keys: %s",
+                    k,
+                    ", ".join(known_keys.keys()),
+                )
 
     def _parse_compose_file(self) -> None:
         args = self.global_args
@@ -2219,6 +2287,8 @@ class PodmanCompose:
             log.debug(" ** merged:\n%s", json.dumps(compose, indent=2))
         # ver = compose.get('version')
 
+        self._parse_x_podman_settings(compose, self.environ)
+
         services: dict | None = compose.get("services")
         if services is None:
             services = {}
@@ -2236,7 +2306,9 @@ class PodmanCompose:
             nets["default"] = None
 
         self.networks = nets
-        if compose.get("x-podman", {}).get("default_net_behavior_compat", False):
+        if try_parse_bool(
+            self.x_podman.get(PodmanCompose.XPodmanSettingKey.DEFAULT_NET_BEHAVIOR_COMPAT, False)
+        ):
             # If there is no network_mode and networks in service,
             # docker-compose will create default network named '<project_name>_default'
             # and add the service to the default network.
@@ -2352,8 +2424,6 @@ class PodmanCompose:
         given_containers = list(container_by_name.values())
         given_containers.sort(key=lambda c: len(c.get("_deps", [])))
         # log("sorted:", [c["name"] for c in given_containers])
-
-        self.x_podman = compose.get("x-podman", {})
 
         args.in_pod = self.resolve_in_pod()
         args.pod_arg_list = self.resolve_pod_args()
