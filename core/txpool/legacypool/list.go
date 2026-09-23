@@ -286,6 +286,17 @@ type list struct {
 	costcap   *uint256.Int // Price of the highest costing transaction (reset only if exceeds balance)
 	gascap    uint64       // Gas limit of the highest spending transaction (reset only if exceeds block limit)
 	totalcost *uint256.Int // Total cost of all transactions in the list
+
+	// OP-Stack adds a backpointer to the pool's rollup cost function.
+	// A list always belongs to a fixed pool, so it's ok to use a reference instead of
+	// always passing the rollup cost function as an argument to every function.
+	// It should not be accessed directly, but through the rollupCostFn method.
+	rollupCostFnPrv rollupCostFuncProvider
+
+	// OP-Stack caches the total cost each transaction was added with, because the
+	// rollup costs can change from block to block, but totalcost must be reduced by
+	// the same amount that it was increased by.
+	txCosts map[common.Hash]*uint256.Int
 }
 
 // newList creates a new transaction list for maintaining nonce-indexable fast,
@@ -296,7 +307,29 @@ func newList(strict bool) *list {
 		txs:       NewSortedMap(),
 		costcap:   new(uint256.Int),
 		totalcost: new(uint256.Int),
+		txCosts:   make(map[common.Hash]*uint256.Int),
 	}
+}
+
+type rollupCostFuncProvider interface {
+	RollupCostFunc() txpool.RollupCostFunc
+}
+
+// newRollupList creates a new transaction list with a rollup cost function provider
+// that must point back to the pool this list belongs to.
+func newRollupList(strict bool, rollupCostFnPrv rollupCostFuncProvider) *list {
+	l := newList(strict)
+	l.rollupCostFnPrv = rollupCostFnPrv
+	return l
+}
+
+// rollupCostFn returns the rollup cost function of the pool this list belongs to,
+// or nil if this list has no provider or the pool has no rollup cost function.
+func (l *list) rollupCostFn() txpool.RollupCostFunc {
+	if l.rollupCostFnPrv == nil {
+		return nil
+	}
+	return l.rollupCostFnPrv.RollupCostFunc()
 }
 
 // Contains returns whether the  list contains a transaction
@@ -310,7 +343,10 @@ func (l *list) Contains(nonce uint64) bool {
 //
 // If the new transaction is accepted into the list, the lists' cost and gas
 // thresholds are also potentially updated.
-func (l *list) Add(tx *types.Transaction, priceBump uint64, l1CostFn txpool.L1CostFunc) (bool, *types.Transaction) {
+//
+// The cost of a transaction includes its rollup costs (L1 data availability and
+// operator costs), as returned by the pool's rollup cost function.
+func (l *list) Add(tx *types.Transaction, priceBump uint64) (bool, *types.Transaction) {
 	// If there's an older better transaction, abort
 	old := l.txs.Get(tx.Nonce())
 	if old != nil {
@@ -333,20 +369,22 @@ func (l *list) Add(tx *types.Transaction, priceBump uint64, l1CostFn txpool.L1Co
 		if tx.GasFeeCapIntCmp(thresholdFeeCap) < 0 || tx.GasTipCapIntCmp(thresholdTip) < 0 {
 			return false, nil
 		}
-		// Old is being replaced, subtract old cost
-		l.subTotalCost([]*types.Transaction{old})
 	}
-	// Add new tx cost to totalcost
-	cost, overflow := uint256.FromBig(tx.Cost())
+	// Add new tx cost, including rollup costs, to totalcost
+	cost, overflow := txpool.TotalTxCost(tx, l.rollupCostFn())
 	if overflow {
 		return false, nil
 	}
-	l.totalcost.Add(l.totalcost, cost)
-	if l1CostFn != nil {
-		if l1Cost := l1CostFn(tx.RollupCostData()); l1Cost != nil { // add rollup cost
-			l.totalcost.Add(l.totalcost, cost)
-		}
+	total, overflow := new(uint256.Int).AddOverflow(l.totalcost, cost)
+	if overflow {
+		return false, nil
 	}
+	l.totalcost = total
+	// Old is being replaced, subtract old cost
+	if old != nil {
+		l.subTotalCost([]*types.Transaction{old})
+	}
+	l.txCosts[tx.Hash()] = cost
 	// Otherwise overwrite the old transaction with the current one
 	l.txs.Put(tx)
 	if l.costcap.Cmp(cost) < 0 {
@@ -386,7 +424,11 @@ func (l *list) Filter(costLimit *uint256.Int, gasLimit uint64) (types.Transactio
 
 	// Filter out all the transactions above the account's funds
 	removed := l.txs.Filter(func(tx *types.Transaction) bool {
-		return tx.Gas() > gasLimit || tx.Cost().Cmp(costLimit.ToBig()) > 0
+		if tx.Gas() > gasLimit {
+			return true
+		}
+		cost, overflow := txpool.TotalTxCost(tx, l.rollupCostFn())
+		return overflow || cost.Cmp(costLimit) > 0
 	})
 
 	if len(removed) == 0 {
@@ -477,10 +519,17 @@ func (l *list) LastElement() *types.Transaction {
 // total cost of all transactions.
 func (l *list) subTotalCost(txs []*types.Transaction) {
 	for _, tx := range txs {
-		_, underflow := l.totalcost.SubOverflow(l.totalcost, uint256.MustFromBig(tx.Cost()))
+		h := tx.Hash()
+		// Every tx in the list was added through Add, which caches its total cost.
+		cost, ok := l.txCosts[h]
+		if !ok {
+			panic("missing cached tx cost")
+		}
+		_, underflow := l.totalcost.SubOverflow(l.totalcost, cost)
 		if underflow {
 			panic("totalcost underflow")
 		}
+		delete(l.txCosts, h)
 	}
 }
 
