@@ -42,6 +42,14 @@ func TestDecodePoVFetchingRequest(t *testing.T) {
 	require.Equal(t, request, expectedDecode)
 }
 
+func TestPoVFetchingRequestProtocol(t *testing.T) {
+	request := &PoVFetchingRequest{}
+
+	require.Equal(t, PoVFetchingV1, request.Protocol())
+	require.Equal(t, "req_pov/1", request.Protocol().String())
+	require.IsType(t, &PoVFetchingResponse{}, request.Response())
+}
+
 func TestPoVFetchingResponse(t *testing.T) {
 	t.Parallel()
 

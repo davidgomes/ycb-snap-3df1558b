@@ -240,6 +240,7 @@ func TestGetSessionInfo(t *testing.T) {
 	require.Equal(t, &ourExpectedGroupIndex, sessionInfo.OurGroup)
 
 	require.Equal(t, nodeFeatures, sessionInfo.NodeFeatures)
+	require.Equal(t, discoveryKeys, sessionInfo.DiscoveryKeys)
 	require.Len(t, sessionInfo.ValidatorGroups, len(validatorGroups))
 
 	ourDiscoveryKey := discoveryKeys[ourIndex]

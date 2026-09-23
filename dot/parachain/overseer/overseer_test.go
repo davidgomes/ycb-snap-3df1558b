@@ -130,6 +130,92 @@ func TestHandleBlockEvents(t *testing.T) {
 	require.Equal(t, int32(1), subSystem2.importedCounter.Load())
 }
 
+type recordingSubsystem struct {
+	name     parachaintypes.SubSystemName
+	received chan any
+}
+
+func (s *recordingSubsystem) Name() parachaintypes.SubSystemName {
+	return s.name
+}
+
+func (s *recordingSubsystem) Run(ctx context.Context, overseerToSubSystem <-chan any) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-overseerToSubSystem:
+			select {
+			case s.received <- msg:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (*recordingSubsystem) ProcessActiveLeavesUpdateSignal(parachaintypes.ActiveLeavesUpdateSignal) error {
+	return nil
+}
+
+func (*recordingSubsystem) ProcessBlockFinalizedSignal(parachaintypes.BlockFinalizedSignal) error {
+	return nil
+}
+
+func (*recordingSubsystem) Stop() {}
+
+func TestProcessMessagesRoutesFetchPoV(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	blockState := NewMockBlockState(ctrl)
+	blockState.EXPECT().GetImportedBlockNotifierChannel().Return(make(chan *types.Block))
+	blockState.EXPECT().GetFinalisedNotifierChannel().Return(make(chan *types.FinalisationInfo))
+	blockState.EXPECT().FreeImportedBlockNotifierChannel(gomock.Any())
+	blockState.EXPECT().FreeFinalisedNotifierChannel(gomock.Any())
+
+	overseer := NewOverseer(blockState)
+
+	availabilityDistribution := &recordingSubsystem{
+		name:     parachaintypes.AvailabilityDistribution,
+		received: make(chan any, 1),
+	}
+	overseer.RegisterSubsystem(availabilityDistribution)
+
+	require.NoError(t, overseer.Start())
+	t.Cleanup(func() {
+		require.NoError(t, overseer.Stop())
+	})
+
+	send := func(msg any) {
+		t.Helper()
+		select {
+		case overseer.SubsystemsToOverseer <- msg:
+		case <-time.After(time.Second):
+			t.Fatalf("overseer is blocked, could not send %T", msg)
+		}
+	}
+
+	// Neither an unknown message nor a message for an unregistered subsystem may block the overseer.
+	send(struct{}{})
+	send(parachaintypes.DistributeBitfield{})
+
+	fetchPoV := parachaintypes.AvailabilityDistributionMessageFetchPoV{
+		RelayParent:   common.Hash{0x01},
+		FromValidator: parachaintypes.ValidatorIndex(2),
+		CandidateHash: parachaintypes.CandidateHash{Value: common.Hash{0x03}},
+		PovHash:       common.Hash{0x04},
+		PovCh:         make(chan parachaintypes.OverseerFuncRes[parachaintypes.PoV]),
+	}
+	send(fetchPoV)
+
+	select {
+	case msg := <-availabilityDistribution.received:
+		require.Equal(t, fetchPoV, msg)
+	case <-time.After(time.Second):
+		t.Fatal("FetchPoV message was not routed to availability distribution")
+	}
+}
+
 func incrementCounters(msg any, finalizedCounter *atomic.Int32, importedCounter *atomic.Int32) {
 	if msg == nil {
 		return
