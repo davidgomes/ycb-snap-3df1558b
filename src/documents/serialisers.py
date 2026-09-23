@@ -495,7 +495,24 @@ class StoragePathField(serializers.PrimaryKeyRelatedField):
         return StoragePath.objects.all()
 
 
+def _api_version_from_context(context) -> int:
+    """
+    Resolve the requested API version, falling back to the default when the
+    serializer is used outside a versioned request.
+    """
+    request = context.get("request") if context else None
+    version = getattr(request, "version", None) if request is not None else None
+    try:
+        return int(version)
+    except (TypeError, ValueError):
+        return int(settings.REST_FRAMEWORK["DEFAULT_VERSION"])
+
+
 class CustomFieldSerializer(serializers.ModelSerializer):
+    def __init__(self, *args, **kwargs):
+        self.api_version = _api_version_from_context(kwargs.get("context"))
+        super().__init__(*args, **kwargs)
+
     data_type = serializers.ChoiceField(
         choices=CustomField.FieldDataType,
         read_only=False,
@@ -574,6 +591,43 @@ class CustomFieldSerializer(serializers.ModelSerializer):
                 {"error": "extra_data.default_currency must be a 3-character string"},
             )
         return super().validate(attrs)
+
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+
+        extra_data = ret.get("extra_data") or {}
+        if (
+            self.api_version < 7
+            and ret.get("data_type", "") == CustomField.FieldDataType.SELECT
+            and isinstance(extra_data.get("select_options"), list)
+        ):
+            # Legacy clients send select options as a list of strings
+            ret["extra_data"]["select_options"] = [
+                {
+                    "label": option,
+                    "id": get_random_string(length=16),
+                }
+                for option in ret["extra_data"]["select_options"]
+            ]
+
+        return ret
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+
+        if (
+            self.api_version < 7
+            and instance.data_type == CustomField.FieldDataType.SELECT
+            and isinstance((ret.get("extra_data") or {}).get("select_options"), list)
+        ):
+            # Convert the select options with ids to a list of strings
+            extra_data = dict(ret["extra_data"])
+            extra_data["select_options"] = [
+                option["label"] for option in extra_data["select_options"]
+            ]
+            ret["extra_data"] = extra_data
+
+        return ret
 
 
 class ReadWriteSerializerMethodField(serializers.SerializerMethodField):
@@ -681,6 +735,48 @@ class CustomFieldInstanceSerializer(serializers.ModelSerializer):
                     )
 
         return data
+
+    def get_api_version(self):
+        return _api_version_from_context(self.context)
+
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+
+        if (
+            self.get_api_version() < 7
+            and ret.get("field") is not None
+            and ret.get("field").data_type == CustomField.FieldDataType.SELECT
+            and ret.get("value") is not None
+        ):
+            # Convert the index of the option in the field.extra_data["select_options"]
+            # list to the options unique id
+            ret["value"] = ret.get("field").extra_data["select_options"][ret["value"]][
+                "id"
+            ]
+
+        return ret
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+
+        if (
+            self.get_api_version() < 7
+            and instance.field.data_type == CustomField.FieldDataType.SELECT
+        ):
+            # return the index of the option in the field.extra_data["select_options"] list
+            select_options = (instance.field.extra_data or {}).get(
+                "select_options",
+            ) or []
+            ret["value"] = next(
+                (
+                    idx
+                    for idx, option in enumerate(select_options)
+                    if option["id"] == instance.value
+                ),
+                None,
+            )
+
+        return ret
 
     def reflect_doclinks(
         self,
