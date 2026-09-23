@@ -510,15 +510,15 @@ The REST API is versioned since Paperless-ngx 1.3.0.
     specified API version.
 -   Even if the underlying data model changes, older API versions will
     always serve compatible data.
--   If no version is specified, Paperless will serve version 1 to ensure
-    compatibility with older clients that do not request a specific API
-    version.
+-   If no version is specified, Paperless serves the configured default
+    API version (currently `7`). Clients that depend on the format of an
+    older API version should always request that version explicitly.
 
 API versions are specified by submitting an additional HTTP `Accept`
 header with every request:
 
 ```
-Accept: application/json; version=6
+Accept: application/json; version=7
 ```
 
 If an invalid version is specified, Paperless 1.3.0 will respond with
@@ -573,3 +573,16 @@ Initial API version.
 #### Version 6
 
 -   Moved acknowledge tasks endpoint to be under `/api/tasks/acknowledge/`.
+
+#### Version 7
+
+-   The `extra_data.select_options` of select type custom fields are now
+    returned as an array of objects with `id` and `label` fields instead of
+    a simple list of strings. Options without an `id` are assigned one when
+    the field is created or updated.
+-   The value of a select type custom field on a document is now the `id` of
+    the selected option instead of its index in `select_options`.
+-   Requests using API version 6 or lower keep using option labels and
+    indexes for select type custom fields.
+-   The default API version, served when a request does not specify one, is
+    now `7` instead of `1`.
