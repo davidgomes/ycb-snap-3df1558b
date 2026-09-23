@@ -88,7 +88,7 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 		token.SetMetadata(auth.MetaKeyBaseURL, baseUrl)
 		cred = token
 	default:
-		login := params.Login
+		login = params.Login
 		if login == "" {
 			// TODO: validate username
 			login, err = input.Prompt("Gitlab login", "login", input.Required)
@@ -117,6 +117,7 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 	conf[core.ConfigKeyTarget] = target
 	conf[confKeyProjectID] = strconv.Itoa(id)
 	conf[confKeyGitlabBaseUrl] = baseUrl
+	conf[confKeyDefaultLogin] = login
 
 	err = g.ValidateConfig(conf)
 	if err != nil {
@@ -145,6 +146,9 @@ func (g *Gitlab) ValidateConfig(conf core.Configuration) error {
 	}
 	if _, ok := conf[confKeyProjectID]; !ok {
 		return fmt.Errorf("missing %s key", confKeyProjectID)
+	}
+	if _, ok := conf[confKeyDefaultLogin]; !ok {
+		return fmt.Errorf("missing %s key", confKeyDefaultLogin)
 	}
 
 	return nil
