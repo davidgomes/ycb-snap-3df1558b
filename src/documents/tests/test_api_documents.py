@@ -2025,13 +2025,20 @@ class TestDocumentApi(DirectoriesMixin, DocumentConsumeDelayMixin, APITestCase):
             self.assertEqual(response.status_code, status.HTTP_201_CREATED, endpoint)
 
     def test_tag_color_default(self):
-        response = self.client.post("/api/tags/", {"name": "tag"}, format="json")
+        response = self.client.post(
+            "/api/tags/",
+            {"name": "tag"},
+            headers={"Accept": "application/json; version=1"},
+            format="json",
+        )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Tag.objects.get(id=response.data["id"]).color, "#a6cee3")
         self.assertEqual(
-            self.client.get(f"/api/tags/{response.data['id']}/", format="json").data[
-                "colour"
-            ],
+            self.client.get(
+                f"/api/tags/{response.data['id']}/",
+                headers={"Accept": "application/json; version=1"},
+                format="json",
+            ).data["colour"],
             1,
         )
 
@@ -2039,14 +2046,17 @@ class TestDocumentApi(DirectoriesMixin, DocumentConsumeDelayMixin, APITestCase):
         response = self.client.post(
             "/api/tags/",
             {"name": "tag", "colour": 3},
+            headers={"Accept": "application/json; version=1"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Tag.objects.get(id=response.data["id"]).color, "#b2df8a")
         self.assertEqual(
-            self.client.get(f"/api/tags/{response.data['id']}/", format="json").data[
-                "colour"
-            ],
+            self.client.get(
+                f"/api/tags/{response.data['id']}/",
+                headers={"Accept": "application/json; version=1"},
+                format="json",
+            ).data["colour"],
             3,
         )
 
@@ -2054,6 +2064,7 @@ class TestDocumentApi(DirectoriesMixin, DocumentConsumeDelayMixin, APITestCase):
         response = self.client.post(
             "/api/tags/",
             {"name": "tag", "colour": 34},
+            headers={"Accept": "application/json; version=1"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -2061,7 +2072,11 @@ class TestDocumentApi(DirectoriesMixin, DocumentConsumeDelayMixin, APITestCase):
     def test_tag_color_custom(self):
         tag = Tag.objects.create(name="test", color="#abcdef")
         self.assertEqual(
-            self.client.get(f"/api/tags/{tag.id}/", format="json").data["colour"],
+            self.client.get(
+                f"/api/tags/{tag.id}/",
+                headers={"Accept": "application/json; version=1"},
+                format="json",
+            ).data["colour"],
             1,
         )
 
