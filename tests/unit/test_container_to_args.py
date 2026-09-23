@@ -531,10 +531,24 @@ class TestContainerToArgs(unittest.IsolatedAsyncioTestCase):
         )
 
     @parameterized.expand([
-        (False, "z", ["--mount", "type=bind,source=./foo,destination=/mnt,z"]),
-        (False, "Z", ["--mount", "type=bind,source=./foo,destination=/mnt,Z"]),
-        (True, "z", ["-v", "./foo:/mnt:z"]),
-        (True, "Z", ["-v", "./foo:/mnt:Z"]),
+        (
+            False,
+            "z",
+            [
+                "--mount",
+                f"type=bind,source={get_test_file_path('test_dirname/foo')},destination=/mnt,z",
+            ],
+        ),
+        (
+            False,
+            "Z",
+            [
+                "--mount",
+                f"type=bind,source={get_test_file_path('test_dirname/foo')},destination=/mnt,Z",
+            ],
+        ),
+        (True, "z", ["-v", f"{get_test_file_path('test_dirname/foo')}:/mnt:z"]),
+        (True, "Z", ["-v", f"{get_test_file_path('test_dirname/foo')}:/mnt:Z"]),
     ])
     async def test_selinux_volume(
         self, prefer_volume: bool, selinux_type: str, expected_additional_args: list
