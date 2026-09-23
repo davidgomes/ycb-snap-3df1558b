@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 from unittest import mock
 
+import pikepdf
 from django.contrib.auth.models import Group
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -560,6 +561,41 @@ class TestPDFActions(DirectoriesMixin, TestCase):
         self.assertEqual(consume_file_args[1].title, "A (merged)")
 
         self.assertEqual(result, "OK")
+
+    @mock.patch("documents.tasks.consume_file.s")
+    def test_merge_non_pdf_uses_archive(self, mock_consume_file):
+        """
+        GIVEN:
+            - Existing PDF documents and a non-PDF document with an archive version
+        WHEN:
+            - Merge action is called including the non-PDF document
+        THEN:
+            - The archive version of the non-PDF document is merged
+            - Consume file should be called
+        """
+        img_archive = self.dirs.archive_dir / "sample_image_archive.pdf"
+        shutil.copy(
+            Path(__file__).parent
+            / "samples"
+            / "documents"
+            / "originals"
+            / "0000001.pdf",
+            img_archive,
+        )
+        self.img_doc.archive_filename = img_archive
+        self.img_doc.save()
+
+        doc_ids = [self.doc1.id, self.img_doc.id]
+
+        with mock.patch("pikepdf.open", wraps=pikepdf.open) as mock_open:
+            result = bulk_edit.merge(doc_ids)
+
+        opened_paths = [Path(c.args[0]) for c in mock_open.call_args_list]
+        self.assertIn(self.img_doc.archive_path, opened_paths)
+        self.assertNotIn(self.img_doc.source_path, opened_paths)
+        self.assertIn(self.doc1.source_path, opened_paths)
+        self.assertEqual(result, "OK")
+        mock_consume_file.assert_called_once()
 
     @mock.patch("documents.bulk_edit.delete.si")
     @mock.patch("documents.tasks.consume_file.s")
