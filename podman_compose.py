@@ -1799,7 +1799,7 @@ def normalize_service_final(service: dict[str, Any], project_dir: str) -> dict[s
         build = service["build"]
         context = build if isinstance(build, str) else build.get("context", ".")
 
-        if not is_path_git_url(context):
+        if not is_context_git_url(context):
             context = os.path.normpath(os.path.join(project_dir, context))
         if not isinstance(service["build"], dict):
             service["build"] = {}
@@ -2788,9 +2788,30 @@ async def compose_push(compose: PodmanCompose, args: argparse.Namespace) -> None
         await compose.podman.run([], "push", [cnt["image"]])
 
 
-def is_path_git_url(path: str) -> bool:
+def is_context_git_url(path: str) -> bool:
+    """Return True when a build context is a remote git URL, not a local path.
+
+    A directory whose name ends in ``.git`` is still a local path. Git URLs are
+    recognized by scheme (``git``, ``http``, ``https``, ``ssh``, ``file``,
+    ``rsync``), by a colon that is not part of a local path (``host:repo``),
+    or by an SCP-style ``user@host`` prefix.
+    """
     r = urllib.parse.urlparse(path)
-    return r.scheme == 'git' or r.path.endswith('.git')
+    if r.scheme in ('git', 'http', 'https', 'ssh', 'file', 'rsync'):
+        return True
+    # ``host:path`` and ``ssh:user@host:repo`` parse with an empty netloc.
+    if r.scheme != "" and r.netloc == "" and r.path != "":
+        return True
+    if r.scheme == "":
+        # ``user@host:path`` has no scheme; give the parser one so username is visible.
+        r = urllib.parse.urlparse("ssh://" + path)
+        if r.username is not None and r.username != "":
+            return True
+    return False
+
+
+# Kept for callers and tests that still use the previous name.
+is_path_git_url = is_context_git_url
 
 
 def adjust_build_ssh_key_paths(compose: PodmanCompose, agent_or_key: str) -> str:
@@ -2835,7 +2856,9 @@ def container_to_build_args(
 
     build_args = []
 
-    if not is_path_git_url(ctx):
+    # Local contexts, including directories whose names end in ".git", still
+    # honor an explicit dockerfile. Remote git URLs are passed through as-is.
+    if not is_context_git_url(ctx):
         custom_dockerfile_given = False
         if dockerfile:
             dockerfile = os.path.join(ctx, dockerfile)
