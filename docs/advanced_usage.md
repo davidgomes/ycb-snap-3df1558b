@@ -510,6 +510,25 @@ Invoice_{{ custom_fields|get_cf_value("Select Field") }}_{{ custom_fields|get_cf
 
 This will create a path like `invoices/2022/01/01/Invoice_OptionTwo_20220101.pdf` if the custom field "Date Field" is set to January 1, 2022 and "Select Field" is set to `OptionTwo`.
 
+You can also use a custom `localize_date` filter to format dates according to a locale, including
+translated month and weekday names. It takes a format and a locale identifier (e.g. `en_US`, `de_DE`, `fr_FR`):
+
+```jinja
+{{ document.created | localize_date('EEEE, d. MMMM yyyy', 'de_DE') }}/{{ title }}
+```
+
+For a document created on October 26, 2023, this results in `Donnerstag, 26. Oktober 2023/Title.pdf`.
+
+The format can be one of the predefined styles `short`, `medium`, `long` or `full`, or a custom
+[CLDR date pattern](https://babel.pocoo.org/en/latest/dates.html#date-fields) such as `dd.MM.yyyy` or `EEEE, MMM d, yyyy`.
+The filter works with both `document.created` (a date) and `document.added` (a datetime, which also supports time
+and time zone fields such as `HH:mm zzz`). Datetimes are formatted in their own time zone, which is UTC for `document.added`.
+
+!!! note
+
+    A `/` produced by the format creates a directory, just like elsewhere in the template. An invalid locale
+    or a value which is not a date or datetime causes the template to fail, and the default filename is used.
+
 You can also use a custom `slugify` filter to slufigy text:
 
 ```jinja
