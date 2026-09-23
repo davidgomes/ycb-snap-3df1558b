@@ -158,16 +158,12 @@ type Downloader struct {
 	syncStartBlock uint64    // Head snap block when Geth was started
 	syncStartTime  time.Time // Time instance when chain sync started
 	syncLogTime    time.Time // Time instance when status was last reported
-
-	// Chain ID for downloaders to reference
-	chainID uint64
 }
 
 // BlockChain encapsulates functions required to sync a (full or snap) blockchain.
 type BlockChain interface {
 	// Config returns the chain configuration.
-	// OP-Stack diff, to adjust withdrawal-hash verification.
-	// Usage of ths in the Downloader is discouraged.
+	// OP-Stack diff, to adjust withdrawal-hash verification and deposit receipt correction.
 	Config() *params.ChainConfig
 
 	// HasHeader verifies a header's presence in the local chain.
@@ -229,7 +225,7 @@ type BlockChain interface {
 }
 
 // New creates a new downloader to fetch hashes and blocks from remote peers.
-func New(stateDb ethdb.Database, mux *event.TypeMux, chain BlockChain, dropPeer peerDropFn, success func(), chainID uint64) *Downloader {
+func New(stateDb ethdb.Database, mux *event.TypeMux, chain BlockChain, dropPeer peerDropFn, success func()) *Downloader {
 	cutoffNumber, cutoffHash := chain.HistoryPruningCutoff()
 	dl := &Downloader{
 		stateDB:           stateDb,
@@ -245,7 +241,6 @@ func New(stateDb ethdb.Database, mux *event.TypeMux, chain BlockChain, dropPeer 
 		SnapSyncer:        snap.NewSyncer(stateDb, chain.TrieDB().Scheme()),
 		stateSyncStart:    make(chan *stateSync),
 		syncStartBlock:    chain.CurrentSnapBlock().Number.Uint64(),
-		chainID:           chainID,
 	}
 	// Create the post-merge skeleton syncer and start the process
 	dl.skeleton = newSkeleton(stateDb, dl.peers, dropPeer, newBeaconBackfiller(dl, success))
@@ -1054,11 +1049,19 @@ func (d *Downloader) commitSnapSyncData(results []*fetchResult, stateSync *state
 		"firstnum", first.Number, "firsthash", first.Hash(),
 		"lastnum", last.Number, "lasthash", last.Hash(),
 	)
-	blocks := make([]*types.Block, len(results))
-	receipts := make([]rlp.RawValue, len(results))
+	var (
+		cfg      = d.blockchain.Config()
+		blocks   = make([]*types.Block, len(results))
+		receipts = make([]rlp.RawValue, len(results))
+	)
 	for i, result := range results {
 		blocks[i] = types.NewBlockWithHeader(result.Header).WithBody(result.body())
-		receipts[i] = correctReceiptsRLP(result.Receipts, result.Transactions, blocks[i].NumberU64(), d.chainID)
+		receipts[i] = result.Receipts
+		// Post-Canyon deposit nonces are committed to by the receipt root, so only
+		// older receipts can carry unverified nonces that need correcting.
+		if cfg.IsOptimism() && !cfg.IsCanyon(blocks[i].Time()) {
+			receipts[i] = correctReceipts(result.Receipts, result.Transactions, blocks[i].NumberU64(), cfg.ChainID)
+		}
 	}
 	if index, err := d.blockchain.InsertReceiptChain(blocks, receipts, d.ancientLimit); err != nil {
 		log.Debug("Downloaded item processing failed", "number", results[index].Header.Number, "hash", results[index].Header.Hash(), "err", err)

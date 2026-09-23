@@ -77,13 +77,25 @@ func initReceiptReferences(chainID uint64) {
 // This function inspects transaction data for user deposits, and if it is found to be incorrect, it is corrected.
 // The data used to correct the deposit nonce is stored in the userDepositData directory,
 // and was generated with the receipt reference tool in the optimism monorepo.
-func correctReceipts(receipts types.Receipts, transactions types.Transactions, blockNumber uint64, chainID uint64) types.Receipts {
+//
+// The receipts must be in the storage encoding ([]*types.ReceiptForStorage), which is how
+// the eth protocol handler delivers them to the downloader. That encoding carries neither
+// the bloom nor the tx type, so deposits are identified by their transactions instead.
+// The input is only decoded if the block has reference data, and only re-encoded if a
+// nonce was actually corrected.
+func correctReceipts(receiptsRLP rlp.RawValue, transactions types.Transactions, blockNumber uint64, chainIDBig *big.Int) rlp.RawValue {
+	if chainIDBig == nil || !chainIDBig.IsUint64() {
+		// Known chains that need receipt correction have uint64 chain IDs
+		return receiptsRLP
+	}
+	chainID := chainIDBig.Uint64()
 	initReceiptReferences(chainID)
+
 	// if there is no data even after initialization, return the receipts as is
 	depositNoncesForChain, ok := userDepositNoncesReference[chainID]
 	if !ok {
 		log.Trace("Receipt Correction: No data source for chain", "chainID", chainID)
-		return receipts
+		return receiptsRLP
 	}
 
 	// check that the block number being examined is within the range of the reference data
@@ -92,35 +104,40 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 			"blockNumber", blockNumber,
 			"start", depositNoncesForChain.First,
 			"end", depositNoncesForChain.Last)
-		return receipts
+		return receiptsRLP
 	}
 
 	// get the block nonces
 	blockNonces, ok := depositNoncesForChain.Results[blockNumber]
 	if !ok {
 		log.Trace("Receipt Correction: Block does not contain user deposits", "blockNumber", blockNumber)
-		return receipts
+		return receiptsRLP
 	}
 
-	signer := types.LatestSignerForChainID(big.NewInt(int64(chainID)))
+	var receipts []*types.ReceiptForStorage
+	if err := rlp.DecodeBytes(receiptsRLP, &receipts); err != nil {
+		log.Warn("Receipt Correction: Failed to decode RLP receipts", "blockNumber", blockNumber, "err", err)
+		return receiptsRLP
+	}
+	if len(receipts) != len(transactions) {
+		log.Warn("Receipt Correction: Receipt and transaction count mismatch", "blockNumber", blockNumber,
+			"receipts", len(receipts), "transactions", len(transactions))
+		return receiptsRLP
+	}
+
 	// iterate through the receipts and transactions to correct the deposit nonce
 	// user deposits should always be at the front of the block, but we will check all transactions to be sure
 	udCount := 0
-	for i := 0; i < len(receipts); i++ {
-		r := receipts[i]
+	corrected := false
+	for i, r := range receipts {
+		tx := transactions[i]
 		// break as soon as a non deposit is found
-		if r.Type != types.DepositTxType {
+		if tx.Type() != types.DepositTxType {
 			break
 		}
 
-		tx := transactions[i]
-		from, err := types.Sender(signer, tx)
-		if err != nil {
-			log.Warn("Receipt Correction: Failed to determine sender", "err", err)
-			continue
-		}
 		// ignore any transactions from the system address
-		if from != systemAddress {
+		if from := tx.From(); from != systemAddress {
 			// prevent index out of range (indicates a problem with the reference data or the block data)
 			if udCount >= len(blockNonces) {
 				log.Warn("Receipt Correction: More user deposits in block than included in reference data", "in_reference", len(blockNonces))
@@ -128,13 +145,14 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 			}
 			nonce := blockNonces[udCount]
 			udCount++
-			log.Trace("Receipt Correction: User Deposit detected", "address", from, "nonce", nonce)
-			if nonce != *r.DepositNonce {
+			log.Trace("Receipt Correction: User Deposit detected", "from", from, "nonce", nonce)
+			if r.DepositNonce == nil || *r.DepositNonce != nonce {
 				// correct the deposit nonce
 				// warn because this should not happen unless the data was modified by corruption or a malicious peer
 				// by correcting the nonce, the entire block is still valid for use
-				log.Warn("Receipt Correction: Corrected deposit nonce", "nonce", *r.DepositNonce, "corrected", nonce)
+				log.Warn("Receipt Correction: Corrected deposit nonce", "from", from, "nonce", fmtUint64Ptr(r.DepositNonce), "corrected", nonce)
 				r.DepositNonce = &nonce
+				corrected = true
 			}
 		}
 	}
@@ -144,29 +162,21 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 	}
 
 	log.Trace("Receipt Correction: Completed", "blockNumber", blockNumber, "userDeposits", udCount, "receipts", len(receipts), "transactions", len(transactions))
-	return receipts
-}
-
-// correctReceiptsRLP corrects the deposit nonce in the receipts using the reference data
-// This function works with RLP encoded receipts, decoding them to Receipt structs,
-// applying corrections, and re-encoding them back to RLP.
-func correctReceiptsRLP(receiptsRLP rlp.RawValue, transactions types.Transactions, blockNumber uint64, chainID uint64) rlp.RawValue {
-	// Decode RLP receipts to Receipt structs
-	var receipts types.Receipts
-	if err := rlp.DecodeBytes(receiptsRLP, &receipts); err != nil {
-		log.Warn("Receipt Correction: Failed to decode RLP receipts", "err", err)
+	if !corrected {
 		return receiptsRLP
 	}
 
-	// Apply corrections using existing correctReceipts function
-	correctedReceipts := correctReceipts(receipts, transactions, blockNumber, chainID)
-
-	// Re-encode to RLP
-	encoded, err := rlp.EncodeToBytes(correctedReceipts)
+	encoded, err := rlp.EncodeToBytes(receipts)
 	if err != nil {
 		log.Warn("Receipt Correction: Failed to encode corrected receipts to RLP", "err", err)
 		return receiptsRLP
 	}
-
 	return encoded
+}
+
+func fmtUint64Ptr(p *uint64) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%d", *p)
 }
