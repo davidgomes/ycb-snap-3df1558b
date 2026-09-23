@@ -8,6 +8,7 @@
 
 ### Bug Fixes
 
+-   Fix: serve select custom field options as labels on API versions before 7 ([#8910](https://github.com/paperless-ngx/paperless-ngx/issues/8910))
 -   Fix: fix long tag visual wrapping [@shamoon](https://github.com/shamoon) ([#8833](https://github.com/paperless-ngx/paperless-ngx/pull/8833))
 -   Fix: Enforce classifier training ordering to prevent extra training [@stumpylog](https://github.com/stumpylog) ([#8822](https://github.com/paperless-ngx/paperless-ngx/pull/8822))
 -   Fix: import router module to not found component [@shamoon](https://github.com/shamoon) ([#8821](https://github.com/paperless-ngx/paperless-ngx/pull/8821))

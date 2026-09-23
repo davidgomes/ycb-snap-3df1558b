@@ -503,6 +503,52 @@ class CustomFieldSerializer(serializers.ModelSerializer):
 
     document_count = serializers.IntegerField(read_only=True)
 
+    def _api_version(self) -> int:
+        request = self.context.get("request") if self.context else None
+        version = getattr(request, "version", None) if request is not None else None
+        if version is None:
+            version = settings.REST_FRAMEWORK["DEFAULT_VERSION"]
+        return int(version)
+
+    def to_internal_value(self, data):
+        # API versions before 7 sent select options as a list of labels.
+        if (
+            self._api_version() < 7
+            and isinstance(data, dict)
+            and isinstance(data.get("extra_data"), dict)
+            and isinstance(data["extra_data"].get("select_options"), list)
+        ):
+            data_type = data.get(
+                "data_type",
+                self.instance.data_type if self.instance is not None else None,
+            )
+            options = data["extra_data"]["select_options"]
+            if data_type == CustomField.FieldDataType.SELECT and all(
+                isinstance(option, str) for option in options
+            ):
+                data = data.copy()
+                extra_data = dict(data["extra_data"])
+                extra_data["select_options"] = [
+                    {"label": option} for option in extra_data["select_options"]
+                ]
+                data["extra_data"] = extra_data
+        return super().to_internal_value(data)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if (
+            self._api_version() < 7
+            and data.get("data_type") == CustomField.FieldDataType.SELECT
+            and isinstance(data.get("extra_data"), dict)
+            and isinstance(data["extra_data"].get("select_options"), list)
+        ):
+            data["extra_data"] = dict(data["extra_data"])
+            data["extra_data"]["select_options"] = [
+                option["label"] if isinstance(option, dict) else option
+                for option in data["extra_data"]["select_options"]
+            ]
+        return data
+
     class Meta:
         model = CustomField
         fields = [

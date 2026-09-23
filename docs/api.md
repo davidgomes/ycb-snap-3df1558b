@@ -518,7 +518,7 @@ API versions are specified by submitting an additional HTTP `Accept`
 header with every request:
 
 ```
-Accept: application/json; version=6
+Accept: application/json; version=7
 ```
 
 If an invalid version is specified, Paperless 1.3.0 will respond with
@@ -573,3 +573,9 @@ Initial API version.
 #### Version 6
 
 -   Moved acknowledge tasks endpoint to be under `/api/tasks/acknowledge/`.
+
+#### Version 7
+
+-   Select custom field `extra_data.select_options` is a list of objects
+    with `id` and `label`. Versions 6 and earlier still return (and
+    accept) a list of option labels.

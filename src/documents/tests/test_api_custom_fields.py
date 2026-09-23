@@ -19,6 +19,7 @@ class TestCustomFieldsAPI(DirectoriesMixin, APITestCase):
     def setUp(self):
         self.user = User.objects.create_superuser(username="temp_admin")
         self.client.force_authenticate(user=self.user)
+        self.client.defaults["HTTP_ACCEPT"] = "application/json; version=7"
         return super().setUp()
 
     def test_create_custom_field(self):
@@ -80,6 +81,64 @@ class TestCustomFieldsAPI(DirectoriesMixin, APITestCase):
             [
                 {"label": "Option 1", "id": "abc-123"},
                 {"label": "Option 2", "id": "def-456"},
+            ],
+        )
+
+    def test_select_options_legacy_api_version(self):
+        """
+        GIVEN:
+            - A select custom field stored with id/label options
+        WHEN:
+            - The field is read or written with an API version before 7
+        THEN:
+            - select_options are labels
+            - posted labels are stored as id/label objects
+        """
+        field = CustomField.objects.create(
+            name="TestSelect",
+            data_type=CustomField.FieldDataType.SELECT,
+            extra_data={
+                "select_options": [
+                    {"id": "abc123abc123abcd", "label": "A"},
+                    {"id": "def456def456defg", "label": "B"},
+                ],
+            },
+        )
+
+        self.client.defaults["HTTP_ACCEPT"] = "application/json; version=6"
+        resp = self.client.get(f"{self.ENDPOINT}{field.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.json()["extra_data"]["select_options"], ["A", "B"])
+
+        resp = self.client.post(
+            self.ENDPOINT,
+            json.dumps(
+                {
+                    "data_type": "select",
+                    "name": "Legacy Select",
+                    "extra_data": {"select_options": ["C", "D"]},
+                },
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.json()["extra_data"]["select_options"], ["C", "D"])
+        created = CustomField.objects.get(name="Legacy Select")
+        self.assertEqual(
+            [option["label"] for option in created.extra_data["select_options"]],
+            ["C", "D"],
+        )
+        self.assertTrue(
+            all(option.get("id") for option in created.extra_data["select_options"]),
+        )
+
+        self.client.defaults["HTTP_ACCEPT"] = "application/json; version=7"
+        resp = self.client.get(f"{self.ENDPOINT}{field.id}/")
+        self.assertEqual(
+            resp.json()["extra_data"]["select_options"],
+            [
+                {"id": "abc123abc123abcd", "label": "A"},
+                {"id": "def456def456defg", "label": "B"},
             ],
         )
 
