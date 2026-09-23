@@ -7,6 +7,14 @@ import (
 	parachaintypes "github.com/ChainSafe/gossamer/dot/parachain/types"
 )
 
+// statementKind is the kind of a statement, either Seconded or Valid.
+type statementKind uint8
+
+const (
+	statementKindSeconded statementKind = iota
+	statementKindValid
+)
+
 // StatementFilter contains bitfields indicating the statements that are known or undesired about a candidate.
 type StatementFilter struct {
 	// Seconded statements. '1' is known or undesired.
@@ -79,4 +87,49 @@ func (s *StatementFilter) MaskSeconded(mask parachaintypes.BitVec) {
 // Bits appearing in mask will not appear in the filter afterwards.
 func (s *StatementFilter) MaskValid(mask parachaintypes.BitVec) {
 	s.validatedInGroup.Mask(mask)
+}
+
+func (s *StatementFilter) bitsFor(kind statementKind) *parachaintypes.BitVec {
+	switch kind {
+	case statementKindSeconded:
+		return &s.secondedInGroup
+	case statementKindValid:
+		return &s.validatedInGroup
+	default:
+		return nil
+	}
+}
+
+// Contains returns true if the statement of the given kind from the validator at
+// indexInGroup is present in the filter. Out of bounds indices are never contained.
+func (s *StatementFilter) Contains(indexInGroup uint, kind statementKind) bool {
+	bits := s.bitsFor(kind)
+	if bits == nil {
+		return false
+	}
+
+	set, err := bits.Get(indexInGroup)
+	return err == nil && set
+}
+
+// Set marks the statement of the given kind from the validator at indexInGroup
+// as present in the filter. Out of bounds indices are ignored.
+func (s *StatementFilter) Set(indexInGroup uint, kind statementKind) {
+	bits := s.bitsFor(kind)
+	if bits == nil {
+		return
+	}
+
+	_ = bits.Set(indexInGroup, true)
+}
+
+// Clone returns a deep copy of the StatementFilter.
+func (s *StatementFilter) Clone() *StatementFilter {
+	secondedInGroup, _ := parachaintypes.NewBitVec(s.secondedInGroup.Bits())
+	validatedInGroup, _ := parachaintypes.NewBitVec(s.validatedInGroup.Bits())
+
+	return &StatementFilter{
+		secondedInGroup:  secondedInGroup,
+		validatedInGroup: validatedInGroup,
+	}
 }
