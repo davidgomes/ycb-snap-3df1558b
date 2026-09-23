@@ -11,6 +11,12 @@
 #PAPERLESS_DBPASS=paperless
 #PAPERLESS_DBSSLMODE=prefer
 
+# Database read cache
+
+#PAPERLESS_DB_READ_CACHE_ENABLED=false
+#PAPERLESS_READ_CACHE_TTL=3600
+#PAPERLESS_READ_CACHE_REDIS_URL=redis://localhost:6379
+
 # Paths and folders
 
 #PAPERLESS_CONSUMPTION_DIR=../consume

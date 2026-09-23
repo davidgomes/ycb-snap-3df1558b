@@ -159,6 +159,48 @@ Available options are `postgresql` and `mariadb`.
 
     Defaults to unset, which uses Django’s built-in defaults.
 
+#### [`PAPERLESS_DB_READ_CACHE_ENABLED=<bool>`](#PAPERLESS_DB_READ_CACHE_ENABLED) {#PAPERLESS_DB_READ_CACHE_ENABLED}
+
+: Caches the results of database read queries in Redis. Identical queries are then answered
+from the cache until they expire, or until Paperless modifies one of the tables they read.
+This reduces the load on the database and can improve response times of read-heavy
+installations, at the cost of additional Redis memory usage.
+
+    Defaults to false.
+
+    !!! warning
+
+        Changes made to the database outside of Paperless, for example restoring a database
+        backup or editing data manually, are not detected. Make such changes while Paperless
+        is stopped, then [clear the read cache](administration.md#db-read-cache) before
+        starting it again.
+
+#### [`PAPERLESS_READ_CACHE_TTL=<int>`](#PAPERLESS_READ_CACHE_TTL) {#PAPERLESS_READ_CACHE_TTL}
+
+: How long, in seconds, the results of database read queries are kept in the read cache.
+
+    Allowed values range from `1` (one second) to `31536000` (one year). Larger values are
+    capped to one year, other values are ignored.
+
+    Defaults to `3600` (one hour).
+
+    !!! note
+
+        A longer TTL increases Redis memory usage. If Redis runs out of memory, it may stop
+        accepting new data, including scheduled tasks. On systems with limited memory,
+        consider using a dedicated Redis instance for the read cache (see
+        [`PAPERLESS_READ_CACHE_REDIS_URL`](#PAPERLESS_READ_CACHE_REDIS_URL)) with a
+        `maxmemory` limit and the `allkeys-lru`
+        [eviction policy](https://redis.io/docs/latest/develop/reference/eviction/).
+
+#### [`PAPERLESS_READ_CACHE_REDIS_URL=<url>`](#PAPERLESS_READ_CACHE_REDIS_URL) {#PAPERLESS_READ_CACHE_REDIS_URL}
+
+: The Redis instance used for the database read cache, in the same format as
+[`PAPERLESS_REDIS`](#PAPERLESS_REDIS). Keys are prefixed with
+[`PAPERLESS_REDIS_PREFIX`](#PAPERLESS_REDIS_PREFIX), like all other keys.
+
+    Defaults to the value of [`PAPERLESS_REDIS`](#PAPERLESS_REDIS).
+
 ## Optional Services
 
 ### Tika {#tika}

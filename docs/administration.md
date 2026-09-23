@@ -627,6 +627,20 @@ entries created prior to this are not removed. This command allows you to prune 
 prune_audit_logs
 ```
 
+### Clear the database read cache {#db-read-cache}
+
+If the [database read cache](configuration.md#PAPERLESS_DB_READ_CACHE_ENABLED) is enabled,
+changes made by Paperless invalidate the cached results automatically. Changes made to the
+database by anything else, such as restoring a database backup or editing data manually, are
+not detected. After such changes, and when enabling the read cache again after it was
+disabled, clear the read cache with the following command:
+
+```shell
+invalidate_cachalot --cache read-cache
+```
+
+This command is only available while the database read cache is enabled.
+
 ### Create superuser {#create-superuser}
 
 If you need to create a superuser, use the following command:
