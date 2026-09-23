@@ -62,7 +62,10 @@ func (ge *gitlabExporter) cacheAllClient(repo repository.RepoConfig) error {
 
 	for _, cred := range creds {
 		if _, ok := ge.identityClient[cred.UserId()]; !ok {
-			client := buildClient(creds[0].(*auth.Token))
+			client, err := buildClient(baseURLFromConf(ge.conf), cred.(*auth.Token))
+			if err != nil {
+				return err
+			}
 			ge.identityClient[cred.UserId()] = client
 		}
 	}

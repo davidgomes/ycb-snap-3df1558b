@@ -18,8 +18,10 @@ const (
 	metaKeyGitlabLogin   = "gitlab-login"
 	metaKeyGitlabProject = "gitlab-project-id"
 
-	keyProjectID = "project-id"
+	keyProjectID     = "project-id"
+	keyGitlabBaseUrl = "base-url"
 
+	defaultBaseURL = "https://gitlab.com/"
 	defaultTimeout = 60 * time.Second
 )
 
@@ -37,10 +39,23 @@ func (*Gitlab) NewExporter() core.Exporter {
 	return &gitlabExporter{}
 }
 
-func buildClient(token *auth.Token) *gitlab.Client {
+func baseURLFromConf(conf core.Configuration) string {
+	if v, ok := conf[keyGitlabBaseUrl]; ok && v != "" {
+		return v
+	}
+	return defaultBaseURL
+}
+
+func buildClient(baseURL string, token *auth.Token) (*gitlab.Client, error) {
 	client := &http.Client{
 		Timeout: defaultTimeout,
 	}
 
-	return gitlab.NewClient(client, token.Value)
+	gitlabClient := gitlab.NewClient(client, token.Value)
+	err := gitlabClient.SetBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	return gitlabClient, nil
 }

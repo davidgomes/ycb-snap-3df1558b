@@ -52,7 +52,10 @@ func (gi *gitlabImporter) Init(repo *cache.RepoCache, conf core.Configuration) e
 		return ErrMissingIdentityToken
 	}
 
-	gi.client = buildClient(creds[0].(*auth.Token))
+	gi.client, err = buildClient(baseURLFromConf(gi.conf), creds[0].(*auth.Token))
+	if err != nil {
+		return err
+	}
 
 	return nil
 }

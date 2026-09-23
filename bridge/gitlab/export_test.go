@@ -280,7 +280,10 @@ func generateRepoName() string {
 
 // create repository need a token with scope 'repo'
 func createRepository(ctx context.Context, name string, token *auth.Token) (int, error) {
-	client := buildClient(token)
+	client, err := buildClient(defaultBaseURL, token)
+	if err != nil {
+		return 0, err
+	}
 	project, _, err := client.Projects.CreateProject(
 		&gitlab.CreateProjectOptions{
 			Name: gitlab.String(name),
@@ -296,7 +299,10 @@ func createRepository(ctx context.Context, name string, token *auth.Token) (int,
 
 // delete repository need a token with scope 'delete_repo'
 func deleteRepository(ctx context.Context, project int, token *auth.Token) error {
-	client := buildClient(token)
-	_, err := client.Projects.DeleteProject(project, gitlab.WithContext(ctx))
+	client, err := buildClient(defaultBaseURL, token)
+	if err != nil {
+		return err
+	}
+	_, err = client.Projects.DeleteProject(project, gitlab.WithContext(ctx))
 	return err
 }
