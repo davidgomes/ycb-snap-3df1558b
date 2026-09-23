@@ -132,6 +132,51 @@ func ValidateHoloceneExtraData(extra []byte) error {
 	return ValidateHolocene1559Params(extra[1:])
 }
 
+// DecodeMinBaseFeeExtraData decodes the Jovian EIP-1559 and minimum base fee parameters from the header
+// 'ExtraData' format defined here:
+// https://specs.optimism.io/protocol/jovian/exec-engine.html#minimum-base-fee-in-block-header
+//
+// To support the Jovian activation block, whose parent still carries Holocene extraData, a 9-byte Holocene
+// extraData is also accepted, in which case the returned minBaseFee is nil. Returns 0,0,nil if the format is
+// invalid, though ValidateMinBaseFeeExtraData should be used instead of this function for validity checking.
+func DecodeMinBaseFeeExtraData(extra []byte) (uint64, uint64, *uint64) {
+	switch len(extra) {
+	case 9:
+		denominator, elasticity := DecodeHolocene1559Params(extra[1:])
+		return denominator, elasticity, nil
+	case 17:
+		denominator, elasticity := DecodeHolocene1559Params(extra[1:9])
+		minBaseFee := binary.BigEndian.Uint64(extra[9:])
+		return denominator, elasticity, &minBaseFee
+	}
+	return 0, 0, nil
+}
+
+// EncodeMinBaseFeeExtraData encodes the EIP-1559 and minimum base fee parameters into the Jovian header
+// 'ExtraData' format. Will panic if either EIP-1559 value is outside uint32 range.
+func EncodeMinBaseFeeExtraData(denom, elasticity, minBaseFee uint64) []byte {
+	r := make([]byte, 17)
+	if denom > gomath.MaxUint32 || elasticity > gomath.MaxUint32 {
+		panic("eip-1559 parameters out of uint32 range")
+	}
+	r[0] = 1
+	binary.BigEndian.PutUint32(r[1:5], uint32(denom))
+	binary.BigEndian.PutUint32(r[5:9], uint32(elasticity))
+	binary.BigEndian.PutUint64(r[9:], minBaseFee)
+	return r
+}
+
+// ValidateMinBaseFeeExtraData checks if the header extraData is valid according to the Jovian upgrade.
+func ValidateMinBaseFeeExtraData(extra []byte) error {
+	if len(extra) != 17 {
+		return fmt.Errorf("jovian extraData should be 17 bytes, got %d", len(extra))
+	}
+	if extra[0] != 1 {
+		return fmt.Errorf("jovian extraData should have version byte 1, got %d", extra[0])
+	}
+	return ValidateHolocene1559Params(extra[1:9])
+}
+
 // CalcBaseFee calculates the basefee of the header.
 // The time belongs to the new block to check which upgrades are active.
 func CalcBaseFee(config *params.ChainConfig, parent *types.Header, time uint64) *big.Int {
@@ -141,13 +186,26 @@ func CalcBaseFee(config *params.ChainConfig, parent *types.Header, time uint64) 
 	}
 	elasticity := config.ElasticityMultiplier()
 	denominator := config.BaseFeeChangeDenominator(time)
-	if config.IsHolocene(parent.Time) {
+	var minBaseFee *uint64
+	if config.IsJovian(parent.Time) {
+		denominator, elasticity, minBaseFee = DecodeMinBaseFeeExtraData(parent.Extra)
+	} else if config.IsHolocene(parent.Time) {
 		denominator, elasticity = DecodeHoloceneExtraData(parent.Extra)
-		if denominator == 0 {
-			// this shouldn't happen as the ExtraData should have been validated prior
-			panic("invalid eip-1559 params in extradata")
+	}
+	if config.IsHolocene(parent.Time) && denominator == 0 {
+		// this shouldn't happen as the ExtraData should have been validated prior
+		panic("invalid eip-1559 params in extradata")
+	}
+	baseFee := calcBaseFee(parent, denominator, elasticity)
+	if minBaseFee != nil {
+		if floor := new(big.Int).SetUint64(*minBaseFee); baseFee.Cmp(floor) < 0 {
+			return floor
 		}
 	}
+	return baseFee
+}
+
+func calcBaseFee(parent *types.Header, denominator, elasticity uint64) *big.Int {
 	parentGasTarget := parent.GasLimit / elasticity
 	// If the parent gasUsed is the same as the target, the baseFee remains unchanged.
 	if parent.GasUsed == parentGasTarget {

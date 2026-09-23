@@ -397,6 +397,12 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 			// Validation performed above in checkOptimismPayloadAttributes
 			eip1559Params = bytes.Clone(payloadAttributes.EIP1559Params)
 		}
+		var minBaseFee *uint64
+		if api.eth.BlockChain().Config().IsOptimismJovian(payloadAttributes.Timestamp) && payloadAttributes.MinBaseFee != nil {
+			// Validation performed above in checkOptimismPayloadAttributes
+			v := *payloadAttributes.MinBaseFee
+			minBaseFee = &v
+		}
 		transactions := make(types.Transactions, 0, len(payloadAttributes.Transactions))
 		for i, otx := range payloadAttributes.Transactions {
 			var tx types.Transaction
@@ -417,6 +423,7 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 			GasLimit:      payloadAttributes.GasLimit,
 			Version:       payloadVersion,
 			EIP1559Params: eip1559Params,
+			MinBaseFee:    minBaseFee,
 		}
 		id := args.Id()
 		// If we already are busy generating this work, then we do not need
