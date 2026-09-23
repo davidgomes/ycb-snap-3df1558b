@@ -18,13 +18,9 @@ func checkOptimismPayload(params engine.ExecutableData, cfg *params.ChainConfig)
 		}
 	}
 
-	// Holocene - extraData
-	if cfg.IsHolocene(params.Timestamp) {
-		if err := eip1559.ValidateHoloceneExtraData(params.ExtraData); err != nil {
-			return err
-		}
-	} else if len(params.ExtraData) > 0 { // pre-Holocene
-		return errors.New("extraData must be empty before Holocene")
+	// Holocene, Jovian - extraData
+	if err := eip1559.ValidateOptimismExtraData(cfg, params.Timestamp, params.ExtraData); err != nil {
+		return err
 	}
 
 	// Isthmus - withdrawalsRoot
@@ -61,6 +57,15 @@ func checkOptimismPayloadAttributes(payloadAttributes *engine.PayloadAttributes,
 		}
 	} else if len(payloadAttributes.EIP1559Params) != 0 { // pre-Holocene
 		return errors.New("non-empty eip155Params pre-Holocene")
+	}
+
+	// Jovian - minBaseFee
+	if cfg.IsJovian(payloadAttributes.Timestamp) {
+		if payloadAttributes.MinBaseFee == nil {
+			return errors.New("missing minBaseFee post-Jovian")
+		}
+	} else if payloadAttributes.MinBaseFee != nil { // pre-Jovian
+		return errors.New("non-nil minBaseFee pre-Jovian")
 	}
 
 	// Note: PayloadAttributes don't contain the Isthmus withdrawalsRoot, it's set during block assembly.
