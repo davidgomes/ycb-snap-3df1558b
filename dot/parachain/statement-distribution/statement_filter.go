@@ -80,3 +80,39 @@ func (s *StatementFilter) MaskSeconded(mask parachaintypes.BitVec) {
 func (s *StatementFilter) MaskValid(mask parachaintypes.BitVec) {
 	s.validatedInGroup.Mask(mask)
 }
+
+// StatementKind is the kind of a statement about a candidate.
+type StatementKind uint8
+
+const (
+	// SecondedStatement is a Seconded statement.
+	SecondedStatement StatementKind = iota
+	// ValidStatement is a Valid statement.
+	ValidStatement
+)
+
+func (s *StatementFilter) bitsFor(kind StatementKind) *parachaintypes.BitVec {
+	if kind == SecondedStatement {
+		return &s.secondedInGroup
+	}
+	return &s.validatedInGroup
+}
+
+// Contains returns true if the statement at the given index in group is set for the given kind.
+func (s *StatementFilter) Contains(indexInGroup uint, kind StatementKind) bool {
+	set, err := s.bitsFor(kind).Get(indexInGroup)
+	return err == nil && set
+}
+
+// Set sets the bit for the statement at the given index in group for the given kind.
+// Out of range indices are ignored.
+func (s *StatementFilter) Set(indexInGroup uint, kind StatementKind) {
+	_ = s.bitsFor(kind).Set(indexInGroup, true)
+}
+
+// Clone returns a deep copy of the StatementFilter.
+func (s *StatementFilter) Clone() *StatementFilter {
+	seconded, _ := parachaintypes.NewBitVec(s.secondedInGroup.Bits())
+	validated, _ := parachaintypes.NewBitVec(s.validatedInGroup.Bits())
+	return &StatementFilter{secondedInGroup: seconded, validatedInGroup: validated}
+}
