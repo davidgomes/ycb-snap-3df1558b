@@ -44,7 +44,7 @@ matcher.
 
 #### [`PAPERLESS_REDIS_PREFIX=<prefix>`](#PAPERLESS_REDIS_PREFIX) {#PAPERLESS_REDIS_PREFIX}
 
-: Prefix to be used in Redis for keys and channels. Useful for sharing one Redis server among multiple Paperless instances.
+: Prefix to be used in Redis for keys and channels, including the keys of all caches. Useful for sharing one Redis server among multiple Paperless instances.
 
     Defaults to no prefix.
 
@@ -158,6 +158,55 @@ Available options are `postgresql` and `mariadb`.
     For PostgreSQL or MariaDB, this sets the connection timeout.
 
     Defaults to unset, which uses Django’s built-in defaults.
+
+#### [`PAPERLESS_DB_READ_CACHE_ENABLED=<bool>`](#PAPERLESS_DB_READ_CACHE_ENABLED) {#PAPERLESS_DB_READ_CACHE_ENABLED}
+
+: Caches the results of database read queries in Redis, using
+[django-cachalot](https://django-cachalot.readthedocs.io/). Repeated identical
+queries are then served from the cache, which reduces the database load and can
+improve response times of read-heavy installations. Cached queries are
+invalidated automatically when Paperless-ngx modifies the involved tables.
+
+    Defaults to `false`, in which case every query hits the database.
+
+    !!! danger
+
+        Changes made to the database outside of Paperless-ngx (e.g. restoring a
+        backup or manual edits) while it is running are **not** detected and
+        stale data may be served until the cache entries expire. Make such changes
+        while Paperless-ngx is stopped, and invalidate the cache afterwards with the
+        [`invalidate_cachalot`](administration.md#invalidate-db-cache) management
+        command. The cache is also invalidated whenever `migrate` runs, which the
+        Docker image does on every start.
+
+#### [`PAPERLESS_READ_CACHE_TTL=<int>`](#PAPERLESS_READ_CACHE_TTL) {#PAPERLESS_READ_CACHE_TTL}
+
+: How long, in seconds, the results of a query are cached. Once expired, the
+next identical query hits the database again and refreshes the cache.
+
+    Allowed values are between `1` (one second) and `31536000` (one year), larger
+    values are capped to one year. Zero, negative or non-integer values are
+    ignored.
+
+    Defaults to `3600` (one hour).
+
+    !!! warning
+
+        A long TTL increases the memory used by Redis. If memory is limited,
+        consider a dedicated Redis instance for the read cache, configured with
+        a memory limit and the `allkeys-lru` eviction policy, see
+        [`PAPERLESS_READ_CACHE_REDIS_URL`](#PAPERLESS_READ_CACHE_REDIS_URL).
+
+#### [`PAPERLESS_READ_CACHE_REDIS_URL=<url>`](#PAPERLESS_READ_CACHE_REDIS_URL) {#PAPERLESS_READ_CACHE_REDIS_URL}
+
+: The Redis instance used for the database read cache. Accepts the same
+formats as [`PAPERLESS_REDIS`](#PAPERLESS_REDIS).
+
+    Defaults to the value of [`PAPERLESS_REDIS`](#PAPERLESS_REDIS), or
+    `redis://localhost:6379` if unset.
+
+    [`PAPERLESS_REDIS_PREFIX`](#PAPERLESS_REDIS_PREFIX) also applies to the keys
+    of the read cache.
 
 ## Optional Services
 

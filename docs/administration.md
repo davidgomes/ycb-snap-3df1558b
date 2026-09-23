@@ -627,6 +627,19 @@ entries created prior to this are not removed. This command allows you to prune 
 prune_audit_logs
 ```
 
+### Invalidate the database read cache {#invalidate-db-cache}
+
+If the [database read cache](configuration.md#PAPERLESS_DB_READ_CACHE_ENABLED) is used,
+it must be invalidated after the database was modified outside of Paperless-ngx, e.g.
+after restoring a backup. The command also works while the read cache is disabled.
+
+```shell
+invalidate_cachalot [app_label[.model_name] ...]
+```
+
+Without arguments, the cache of every table is invalidated. Otherwise only the cache
+of the given apps (e.g. `documents`) or models (e.g. `documents.Tag`) is invalidated.
+
 ### Create superuser {#create-superuser}
 
 If you need to create a superuser, use the following command:
