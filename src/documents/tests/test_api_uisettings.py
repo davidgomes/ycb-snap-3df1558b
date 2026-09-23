@@ -73,6 +73,27 @@ class TestApiUiSettings(DirectoriesMixin, APITestCase):
             settings["settings"],
         )
 
+    def test_api_set_ui_settings_invalid_settings(self):
+        """
+        GIVEN:
+            - UI settings payload where settings is not an object
+        WHEN:
+            - API is called to set ui settings
+        THEN:
+            - 400 is returned and ui settings can still be retrieved
+        """
+        response = self.client.post(
+            self.ENDPOINT,
+            json.dumps({"settings": "random_string"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Expected a dictionary", str(response.data["settings"]))
+
+        response = self.client.get(self.ENDPOINT, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
     def test_api_set_ui_settings_insufficient_global_permissions(self):
         not_superuser = User.objects.create_user(username="test_not_superuser")
         self.client.force_authenticate(user=not_superuser)

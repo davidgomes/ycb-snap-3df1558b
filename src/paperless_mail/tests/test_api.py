@@ -518,6 +518,58 @@ class TestAPIMailRules(DirectoriesMixin, APITestCase):
             rule1["assign_owner_from_rule"],
         )
 
+    def test_create_mail_rule_minimal_fields(self):
+        """
+        GIVEN:
+            - Configured mail account exists
+        WHEN:
+            - API request is made to add a mail rule with only required fields
+            - API request is made to add a mail rule with a MOVE or TAG action
+              but without an action parameter
+        THEN:
+            - The mail rule is created
+            - 400 is returned for the rule missing the action parameter
+        """
+        account1 = MailAccount.objects.create(
+            name="Email1",
+            username="username1",
+            password="password1",
+            imap_server="server.example.com",
+            imap_port=443,
+            imap_security=MailAccount.ImapSecurity.SSL,
+            character_set="UTF-8",
+        )
+
+        response = self.client.post(
+            self.ENDPOINT,
+            data={"name": "Rule1", "account": account1.pk},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        for action in [MailRule.MailAction.MOVE, MailRule.MailAction.TAG]:
+            response = self.client.post(
+                self.ENDPOINT,
+                data={
+                    "name": f"Rule{action}",
+                    "account": account1.pk,
+                    "action": action,
+                },
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertIn("action parameter is required", str(response.data))
+
+        response = self.client.post(
+            self.ENDPOINT,
+            data={
+                "name": "Rule2",
+                "account": account1.pk,
+                "action": MailRule.MailAction.MOVE,
+                "action_parameter": "Archive",
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(MailRule.objects.count(), 2)
+
     def test_delete_mail_rule(self):
         """
         GIVEN:

@@ -90,6 +90,32 @@ class TestApiAppConfig(DirectoriesMixin, APITestCase):
             | response.data["settings"],
         )
 
+    def test_api_create_config(self):
+        """
+        GIVEN:
+            - API request to create an app config
+        WHEN:
+            - API is called
+        THEN:
+            - 405 is returned and no additional config is created
+        """
+        for _ in range(2):
+            response = self.client.post(
+                self.ENDPOINT,
+                json.dumps(
+                    {
+                        "user_args": None,
+                        "barcode_tag_mapping": None,
+                    },
+                ),
+                content_type="application/json",
+            )
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_405_METHOD_NOT_ALLOWED,
+            )
+        self.assertEqual(ApplicationConfiguration.objects.count(), 1)
+
     def test_api_update_config(self):
         """
         GIVEN:

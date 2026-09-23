@@ -1754,6 +1754,8 @@ class StoragePathSerializer(MatchingModelSerializer, OwnedObjectSerializer):
 
 
 class UiSettingsViewSerializer(serializers.ModelSerializer):
+    settings = serializers.DictField(required=False, allow_null=True)
+
     class Meta:
         model = UiSettings
         depth = 1
@@ -1764,7 +1766,7 @@ class UiSettingsViewSerializer(serializers.ModelSerializer):
 
     def validate_settings(self, settings):
         # we never save update checking backend setting
-        if "update_checking" in settings:
+        if settings and isinstance(settings.get("update_checking"), dict):
             try:
                 settings["update_checking"].pop("backend_setting")
             except KeyError:
