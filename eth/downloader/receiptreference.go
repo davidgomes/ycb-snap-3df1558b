@@ -129,11 +129,15 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 			nonce := blockNonces[udCount]
 			udCount++
 			log.Trace("Receipt Correction: User Deposit detected", "address", from, "nonce", nonce)
-			if nonce != *r.DepositNonce {
+			if r.DepositNonce == nil || nonce != *r.DepositNonce {
 				// correct the deposit nonce
 				// warn because this should not happen unless the data was modified by corruption or a malicious peer
 				// by correcting the nonce, the entire block is still valid for use
-				log.Warn("Receipt Correction: Corrected deposit nonce", "nonce", *r.DepositNonce, "corrected", nonce)
+				var have any
+				if r.DepositNonce != nil {
+					have = *r.DepositNonce
+				}
+				log.Warn("Receipt Correction: Corrected deposit nonce", "nonce", have, "corrected", nonce)
 				r.DepositNonce = &nonce
 			}
 		}
@@ -147,26 +151,89 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 	return receipts
 }
 
-// correctReceiptsRLP corrects the deposit nonce in the receipts using the reference data
-// This function works with RLP encoded receipts, decoding them to Receipt structs,
-// applying corrections, and re-encoding them back to RLP.
+// correctReceiptsRLP corrects the deposit nonce in the receipts using the reference data.
+// Snap-sync stores block receipts as a list of types.ReceiptForStorage (no bloom).
+// Consensus encoding (a list of types.Receipt, bloom included) is also accepted so
+// callers that already hold that form keep working.
+// The original bytes are returned when nothing needs to change.
 func correctReceiptsRLP(receiptsRLP rlp.RawValue, transactions types.Transactions, blockNumber uint64, chainID uint64) rlp.RawValue {
-	// Decode RLP receipts to Receipt structs
-	var receipts types.Receipts
-	if err := rlp.DecodeBytes(receiptsRLP, &receipts); err != nil {
+	receipts, storageEncoding, err := decodeReceiptsForCorrection(receiptsRLP, transactions)
+	if err != nil {
 		log.Warn("Receipt Correction: Failed to decode RLP receipts", "err", err)
 		return receiptsRLP
 	}
 
-	// Apply corrections using existing correctReceipts function
+	before := depositNonceSnapshot(receipts)
 	correctedReceipts := correctReceipts(receipts, transactions, blockNumber, chainID)
+	if depositNoncesEqual(before, correctedReceipts) {
+		return receiptsRLP
+	}
 
-	// Re-encode to RLP
-	encoded, err := rlp.EncodeToBytes(correctedReceipts)
+	var encoded []byte
+	if storageEncoding {
+		stored := make([]*types.ReceiptForStorage, len(correctedReceipts))
+		for i, r := range correctedReceipts {
+			stored[i] = (*types.ReceiptForStorage)(r)
+		}
+		encoded, err = rlp.EncodeToBytes(stored)
+	} else {
+		encoded, err = rlp.EncodeToBytes(correctedReceipts)
+	}
 	if err != nil {
 		log.Warn("Receipt Correction: Failed to encode corrected receipts to RLP", "err", err)
 		return receiptsRLP
 	}
-
 	return encoded
+}
+
+// decodeReceiptsForCorrection decodes either storage receipts or consensus receipts.
+// Storage receipts do not carry the transaction type, so it is copied from transactions.
+func decodeReceiptsForCorrection(receiptsRLP rlp.RawValue, transactions types.Transactions) (types.Receipts, bool, error) {
+	var stored []*types.ReceiptForStorage
+	if err := rlp.DecodeBytes(receiptsRLP, &stored); err == nil {
+		receipts := make(types.Receipts, len(stored))
+		for i, sr := range stored {
+			receipts[i] = (*types.Receipt)(sr)
+			if i < len(transactions) {
+				receipts[i].Type = transactions[i].Type()
+			}
+		}
+		return receipts, true, nil
+	}
+
+	var receipts types.Receipts
+	if err := rlp.DecodeBytes(receiptsRLP, &receipts); err != nil {
+		return nil, false, err
+	}
+	return receipts, false, nil
+}
+
+func depositNonceSnapshot(receipts types.Receipts) []*uint64 {
+	out := make([]*uint64, len(receipts))
+	for i, r := range receipts {
+		if r == nil || r.DepositNonce == nil {
+			continue
+		}
+		n := *r.DepositNonce
+		out[i] = &n
+	}
+	return out
+}
+
+func depositNoncesEqual(before []*uint64, receipts types.Receipts) bool {
+	if len(before) != len(receipts) {
+		return false
+	}
+	for i, r := range receipts {
+		if r == nil || r.DepositNonce == nil {
+			if before[i] != nil {
+				return false
+			}
+			continue
+		}
+		if before[i] == nil || *before[i] != *r.DepositNonce {
+			return false
+		}
+	}
+	return true
 }

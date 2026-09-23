@@ -221,3 +221,30 @@ func TestCorrectReceiptsRLP(t *testing.T) {
 		tc.validate(originalRLP, correctedRLP)
 	}
 }
+
+func TestCorrectReceiptsRLPStorageEncoding(t *testing.T) {
+	nonces := []uint64{78756, 78757, 12345, 78759}
+	receipts := make(types.Receipts, len(nonces))
+	transactions := make(types.Transactions, len(nonces))
+	for i := range nonces {
+		receipts[i] = &types.Receipt{Type: types.DepositTxType, DepositNonce: &nonces[i]}
+		transactions[i] = types.NewTx(&types.DepositTx{})
+	}
+	originalRLP := types.EncodeBlockReceiptLists([]types.Receipts{receipts})[0]
+
+	correctedRLP := correctReceiptsRLP(originalRLP, transactions, 8835769, 420)
+
+	var stored []*types.ReceiptForStorage
+	assert.NoError(t, rlp.DecodeBytes(correctedRLP, &stored))
+	assert.Equal(t, len(nonces), len(stored))
+	// Reference data for this block corrects the third user deposit (index 2).
+	assert.NotNil(t, stored[2].DepositNonce)
+	assert.NotEqual(t, nonces[2], *stored[2].DepositNonce)
+	assert.Equal(t, nonces[0], *stored[0].DepositNonce)
+	assert.Equal(t, nonces[1], *stored[1].DepositNonce)
+	assert.Equal(t, nonces[3], *stored[3].DepositNonce)
+
+	// Unchanged blocks keep the original storage bytes.
+	unchanged := correctReceiptsRLP(originalRLP, transactions, 1, 420)
+	assert.Equal(t, []byte(originalRLP), []byte(unchanged))
+}
