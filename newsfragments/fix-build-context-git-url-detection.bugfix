@@ -1,0 +1,1 @@
+Fixed `dockerfile` being ignored when the build context is a local directory whose name ends with `.git`; git URLs are now detected by their scheme or scp-like syntax instead of the `.git` suffix.
