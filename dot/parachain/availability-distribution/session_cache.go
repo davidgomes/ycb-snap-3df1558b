@@ -57,6 +57,12 @@ type SessionCache interface {
 		rt runtime.Instance,
 	) (*SessionInfo, error)
 
+	GetAuthorityID(
+		validatorIndex parachaintypes.ValidatorIndex,
+		relayParent common.Hash,
+		rt runtime.Instance,
+	) (parachaintypes.AuthorityDiscoveryID, error)
+
 	ReportBadValidators(
 		sessionIndex parachaintypes.SessionIndex,
 		groupIndex parachaintypes.GroupIndex,
@@ -70,7 +76,12 @@ type LRUSessionCache struct {
 	// session index by relay parent
 	sessionIndexCache *lrucache.LRUCache[common.Hash, *parachaintypes.SessionIndex]
 	sessionInfoCache  *lrucache.LRUCache[parachaintypes.SessionIndex, *SessionInfo]
+
+	// authority discovery IDs, indexable by validator index, by relay parent
+	authIDCache *lrucache.LRUCache[common.Hash, []parachaintypes.AuthorityDiscoveryID]
 }
+
+const authIDCacheCapacity = 100
 
 var _ SessionCache = (*LRUSessionCache)(nil)
 
@@ -81,6 +92,7 @@ func NewLRUSessionCache(keystore keystore.Keystore) *LRUSessionCache {
 		sessionIndexCache: lrucache.NewLRUCache[common.Hash, *parachaintypes.SessionIndex](10),
 		// We need the current and previous session.
 		sessionInfoCache: lrucache.NewLRUCache[parachaintypes.SessionIndex, *SessionInfo](2),
+		authIDCache:      lrucache.NewLRUCache[common.Hash, []parachaintypes.AuthorityDiscoveryID](authIDCacheCapacity),
 	}
 }
 
@@ -148,6 +160,41 @@ func (c *LRUSessionCache) GetSessionInfo(
 	}
 	c.sessionInfoCache.Put(sessionIndex, cachedSessionInfo)
 	return cachedSessionInfo, nil
+}
+
+// GetAuthorityID returns the authority discovery ID of the validator with the given index in the session of any child
+// of the given relay parent. Unlike GetSessionInfo(), this also works on nodes that are not validators.
+func (c *LRUSessionCache) GetAuthorityID(
+	validatorIndex parachaintypes.ValidatorIndex,
+	relayParent common.Hash,
+	rt runtime.Instance,
+) (parachaintypes.AuthorityDiscoveryID, error) {
+	authIDs := c.authIDCache.Get(relayParent)
+
+	if authIDs == nil {
+		sessionIndex, err := c.GetSessionIndexForChild(relayParent, rt)
+		if err != nil {
+			return parachaintypes.AuthorityDiscoveryID{}, fmt.Errorf("getting session index: %w", err)
+		}
+
+		sessionInfo, err := rt.ParachainHostSessionInfo(sessionIndex)
+		if err != nil {
+			return parachaintypes.AuthorityDiscoveryID{}, fmt.Errorf("getting session info: %w", err)
+		}
+		if sessionInfo == nil {
+			return parachaintypes.AuthorityDiscoveryID{}, fmt.Errorf("no session info for session %d", sessionIndex)
+		}
+
+		authIDs = sessionInfo.DiscoveryKeys
+		c.authIDCache.Put(relayParent, authIDs)
+	}
+
+	if int(validatorIndex) >= len(authIDs) {
+		return parachaintypes.AuthorityDiscoveryID{}, fmt.Errorf(
+			"validator index %d out of range, number of validators: %d", validatorIndex, len(authIDs))
+	}
+
+	return authIDs[validatorIndex], nil
 }
 
 func (c *LRUSessionCache) getOurGroup(

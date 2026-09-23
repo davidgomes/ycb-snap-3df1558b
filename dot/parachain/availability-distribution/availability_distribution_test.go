@@ -8,6 +8,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ChainSafe/gossamer/dot/network"
 	availabilitystore "github.com/ChainSafe/gossamer/dot/parachain/availability-store"
@@ -943,5 +944,154 @@ func TestAvailabilityChunkIndex(t *testing.T) {
 				assert.Equal(t, tc.expected, actual)
 			}
 		})
+	}
+}
+
+func TestProcessAvailabilityDistributionMessageFetchPoV(t *testing.T) {
+	t.Parallel()
+
+	relayParent := common.Hash{0x01}
+	validatorIndex := parachaintypes.ValidatorIndex(1)
+	authorityID := parachaintypes.AuthorityDiscoveryID{0x05}
+	candidateHash := parachaintypes.CandidateHash{Value: common.Hash{0x02}}
+
+	setup := func(t *testing.T) (*AvailabilityDistribution, chan any) {
+		ctrl := gomock.NewController(t)
+
+		netMock := NewMockNetwork(ctrl)
+		netMock.EXPECT().RegisterRequestHandler(protocol.ID("req_chunk/2"), gomock.Any())
+		netMock.EXPECT().RegisterRequestHandler(protocol.ID("req_pov/1"), gomock.Any())
+
+		runtimeMock := NewMockInstance(ctrl)
+		stateMock := NewMockBlockState(ctrl)
+		stateMock.EXPECT().GetRuntime(relayParent).Return(runtimeMock, nil)
+
+		cacheMock := NewMockSessionCache(ctrl)
+		cacheMock.EXPECT().GetAuthorityID(validatorIndex, relayParent, runtimeMock).Return(authorityID, nil)
+
+		overseerCh := make(chan any)
+		return NewAvailabilityDistribution(overseerCh, netMock, stateMock, cacheMock), overseerCh
+	}
+
+	pov := parachaintypes.PoV{BlockData: []byte{0x01, 0x02}}
+
+	testCases := []struct {
+		description  string
+		makeResult   func(t *testing.T) messages.ReqRespResult
+		expectedData parachaintypes.PoV
+		errExpected  bool
+	}{
+		{
+			description: "request_fails",
+			makeResult: func(*testing.T) messages.ReqRespResult {
+				return messages.ReqRespResult{Error: errors.New("network failure")}
+			},
+			errExpected: true,
+		},
+		{
+			description: "unexpected_response_type",
+			makeResult: func(*testing.T) messages.ReqRespResult {
+				return messages.ReqRespResult{Response: &messages.ChunkFetchingResponse{}}
+			},
+			errExpected: true,
+		},
+		{
+			description: "no_such_pov",
+			makeResult: func(t *testing.T) messages.ReqRespResult {
+				response := messages.PoVFetchingResponse{}
+				require.NoError(t, response.SetValue(parachaintypes.NoSuchPoV{}))
+				return messages.ReqRespResult{Response: &response}
+			},
+			errExpected: true,
+		},
+		{
+			description: "happy_path",
+			makeResult: func(t *testing.T) messages.ReqRespResult {
+				response := messages.PoVFetchingResponse{}
+				require.NoError(t, response.SetValue(pov))
+				return messages.ReqRespResult{Response: &response}
+			},
+			expectedData: pov,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			ad, overseerCh := setup(t)
+			msg := parachaintypes.AvailabilityDistributionMessageFetchPoV{
+				RelayParent:   relayParent,
+				FromValidator: validatorIndex,
+				CandidateHash: candidateHash,
+				PovCh:         make(chan parachaintypes.OverseerFuncRes[parachaintypes.PoV]),
+			}
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- ad.processMessage(msg) }()
+
+			select {
+			case overseerMsg := <-overseerCh:
+				sendRequests, ok := overseerMsg.(messages.SendRequests)
+				require.True(t, ok)
+				require.Len(t, sendRequests.Requests, 1)
+
+				request := sendRequests.Requests[0]
+				require.Equal(t, authorityID, request.Recipient)
+				require.Equal(t, &messages.PoVFetchingRequest{CandidateHash: candidateHash}, request.Payload)
+
+				request.Result <- tc.makeResult(t)
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for request")
+			}
+
+			require.NoError(t, <-errCh)
+
+			select {
+			case res := <-msg.PovCh:
+				if tc.errExpected {
+					require.ErrorIs(t, res.Err, parachaintypes.ErrFetchPoV)
+					require.Empty(t, res.Data)
+				} else {
+					require.NoError(t, res.Err)
+					require.Equal(t, tc.expectedData, res.Data)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for result")
+			}
+
+			_, ok := <-msg.PovCh
+			require.False(t, ok, "result channel should be closed")
+		})
+	}
+}
+
+func TestProcessAvailabilityDistributionMessageFetchPoV_AuthorityIDFails(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	netMock := NewMockNetwork(ctrl)
+	netMock.EXPECT().RegisterRequestHandler(gomock.Any(), gomock.Any()).Times(2)
+
+	runtimeMock := NewMockInstance(ctrl)
+	stateMock := NewMockBlockState(ctrl)
+	stateMock.EXPECT().GetRuntime(gomock.Any()).Return(runtimeMock, nil)
+
+	cacheMock := NewMockSessionCache(ctrl)
+	cacheMock.EXPECT().GetAuthorityID(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(parachaintypes.AuthorityDiscoveryID{}, errors.New("fail"))
+
+	ad := NewAvailabilityDistribution(make(chan any), netMock, stateMock, cacheMock)
+	msg := parachaintypes.AvailabilityDistributionMessageFetchPoV{
+		PovCh: make(chan parachaintypes.OverseerFuncRes[parachaintypes.PoV]),
+	}
+
+	require.Error(t, ad.processMessage(msg))
+
+	select {
+	case res := <-msg.PovCh:
+		require.ErrorIs(t, res.Err, parachaintypes.ErrFetchPoV)
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for result")
 	}
 }

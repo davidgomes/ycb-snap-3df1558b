@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ChainSafe/gossamer/dot/network"
 	availabilitystore "github.com/ChainSafe/gossamer/dot/parachain/availability-store"
@@ -25,6 +26,12 @@ import (
 var logger = log.NewFromGlobal(log.AddContext("pkg", "parachain-availability-distribution"))
 
 const leafAncestryLenWithinSession = 3
+
+// povRequestTimeout must stay below parachaintypes.SubsystemRequestTimeout, which is how long candidate backing waits
+// for the result.
+const povRequestTimeout = 4 * time.Second
+
+var ErrPoVRequestTimeout = errors.New("PoV request timed out")
 
 type AvailabilityDistribution struct {
 	subSystemToOverseer chan<- any
@@ -268,10 +275,109 @@ func (ad *AvailabilityDistribution) ProcessBlockFinalizedSignal(_ parachaintypes
 	return nil // nothing to do
 }
 
+// processAvailabilityDistributionMessageFetchPoV requests the PoV from the validator specified in the message. The
+// response is awaited in a separate goroutine to avoid blocking the subsystem. The result is sent on msg.PovCh, which
+// is closed afterwards in all cases.
 func (ad *AvailabilityDistribution) processAvailabilityDistributionMessageFetchPoV(
 	msg parachaintypes.AvailabilityDistributionMessageFetchPoV,
 ) error {
-	return nil // TODO: implement #4489
+	fail := func(err error) error {
+		go sendPoVResult(msg.PovCh, parachaintypes.OverseerFuncRes[parachaintypes.PoV]{
+			Err: fmt.Errorf("%w: %w", parachaintypes.ErrFetchPoV, err),
+		})
+		return err
+	}
+
+	rt, err := ad.blockState.GetRuntime(msg.RelayParent)
+	if err != nil {
+		return fail(fmt.Errorf("instantiating runtime for relay parent %s: %w", msg.RelayParent, err))
+	}
+
+	authorityID, err := ad.sessionCache.GetAuthorityID(msg.FromValidator, msg.RelayParent, rt)
+	if err != nil {
+		return fail(fmt.Errorf(
+			"getting authority ID for validator %d at relay parent %s: %w", msg.FromValidator, msg.RelayParent, err))
+	}
+
+	request := messages.NewOutgoingRequest(authorityID, &messages.PoVFetchingRequest{CandidateHash: msg.CandidateHash})
+
+	ad.subSystemToOverseer <- messages.SendRequests{
+		Requests:       []*messages.OutgoingRequest{request},
+		IfDisconnected: messages.ImmediateError,
+	}
+
+	go func() {
+		pov, err := awaitPoVResponse(request, authorityID, msg.CandidateHash)
+		if err != nil {
+			logger.Debugf("fetching PoV for candidate %s of para %d from validator %d: %s",
+				msg.CandidateHash, msg.ParaID, msg.FromValidator, err)
+			sendPoVResult(msg.PovCh, parachaintypes.OverseerFuncRes[parachaintypes.PoV]{
+				Err: fmt.Errorf("%w: %w", parachaintypes.ErrFetchPoV, err),
+			})
+			return
+		}
+
+		sendPoVResult(msg.PovCh, parachaintypes.OverseerFuncRes[parachaintypes.PoV]{Data: pov})
+	}()
+
+	return nil
+}
+
+func awaitPoVResponse(
+	request *messages.OutgoingRequest,
+	authorityID parachaintypes.AuthorityDiscoveryID,
+	candidateHash parachaintypes.CandidateHash,
+) (parachaintypes.PoV, error) {
+	var result messages.ReqRespResult
+	var ok bool
+
+	select {
+	case result, ok = <-request.Result:
+		if !ok {
+			return parachaintypes.PoV{}, errors.New("request cancelled")
+		}
+	case <-time.After(povRequestTimeout):
+		request.Cancel()
+		return parachaintypes.PoV{}, ErrPoVRequestTimeout
+	}
+
+	if result.Error != nil {
+		return parachaintypes.PoV{}, result.Error
+	}
+
+	response, ok := result.Response.(*messages.PoVFetchingResponse)
+	if !ok {
+		return parachaintypes.PoV{}, fmt.Errorf("unexpected network message type in response: %T", result.Response)
+	}
+
+	v, err := response.Value()
+	if err != nil {
+		return parachaintypes.PoV{}, err
+	}
+
+	switch v := v.(type) {
+	case parachaintypes.PoV:
+		return v, nil
+	case parachaintypes.NoSuchPoV:
+		return parachaintypes.PoV{}, fmt.Errorf(
+			"validator %s does not have PoV for candidate %s", common.BytesToHex(authorityID[:]), candidateHash)
+	default:
+		return parachaintypes.PoV{}, fmt.Errorf("unexpected PoV fetching response value: %T", v)
+	}
+}
+
+// sendPoVResult delivers the result and closes the channel. The receiver stops waiting after
+// parachaintypes.SubsystemRequestTimeout, so the send is abandoned after that time to not leak the goroutine.
+func sendPoVResult(
+	ch chan parachaintypes.OverseerFuncRes[parachaintypes.PoV],
+	res parachaintypes.OverseerFuncRes[parachaintypes.PoV],
+) {
+	defer close(ch)
+
+	select {
+	case ch <- res:
+	case <-time.After(parachaintypes.SubsystemRequestTimeout):
+	}
 }
 
 func (ad *AvailabilityDistribution) handleChunkFetchingRequest(
