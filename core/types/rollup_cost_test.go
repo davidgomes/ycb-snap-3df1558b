@@ -463,6 +463,47 @@ func TestNewOperatorCostFunc(t *testing.T) {
 	require.Equal(t, ithmusOperatorFee, fee)
 }
 
+// TestNewTotalRollupCostFunc tests that the total rollup cost function only contains the L1
+// cost before Isthmus, and both the L1 cost and operator cost after Isthmus.
+func TestNewTotalRollupCostFunc(t *testing.T) {
+	zeroTime := uint64(0)
+	isthmusTime := uint64(10)
+	config := &params.ChainConfig{
+		Optimism:     params.OptimismTestConfig.Optimism,
+		RegolithTime: &zeroTime,
+		EcotoneTime:  &zeroTime,
+		FjordTime:    &zeroTime,
+		HoloceneTime: &zeroTime,
+		IsthmusTime:  &isthmusTime,
+	}
+	statedb := &testStateGetter{
+		baseFee:             baseFee,
+		overhead:            overhead,
+		scalar:              scalar,
+		blobBaseFee:         blobBaseFee,
+		baseFeeScalar:       uint32(baseFeeScalar.Uint64()),
+		blobBaseFeeScalar:   uint32(blobBaseFeeScalar.Uint64()),
+		operatorFeeScalar:   uint32(operatorFeeScalar.Uint64()),
+		operatorFeeConstant: operatorFeeConstant.Uint64(),
+	}
+	// emptyTx has a zero gas limit, so use a copy with the gas limit the operator fee is computed for.
+	// Like emptyTx, it's below the Fjord minimum size, so its L1 cost is fjordFee.
+	tx := NewTransaction(emptyTx.Nonce(), *emptyTx.To(), emptyTx.Value(), bedrockGas.Uint64(), emptyTx.GasPrice(), emptyTx.Data())
+	require.Equal(t, MinTransactionSize, tx.RollupCostData().EstimatedDASize())
+
+	costFunc := NewTotalRollupCostFunc(config, statedb)
+	require.NotNil(t, costFunc)
+
+	cost := costFunc(tx, isthmusTime-1)
+	require.Equal(t, uint256.MustFromBig(fjordFee), cost, "pre-Isthmus total rollup cost must only contain the L1 cost")
+
+	cost = costFunc(tx, isthmusTime)
+	expCost := new(uint256.Int).Add(uint256.MustFromBig(fjordFee), ithmusOperatorFee)
+	require.Equal(t, expCost, cost, "Isthmus total rollup cost must contain the L1 cost and operator cost")
+
+	require.Nil(t, NewTotalRollupCostFunc(params.TestChainConfig, statedb), "non-OP chains have no rollup cost")
+}
+
 func TestFlzCompressLen(t *testing.T) {
 	var (
 		emptyTxBytes, _   = emptyTx.MarshalBinary()

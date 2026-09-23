@@ -110,6 +110,17 @@ type L1CostFunc func(rcd RollupCostData, blockTime uint64) *big.Int
 // sender of non-Deposit transactions. It returns 0 if no operator fee is charged.
 type OperatorCostFunc func(gasUsed uint64, blockTime uint64) *uint256.Int
 
+// RollupTransaction provides all the input data needed to compute the total rollup cost.
+type RollupTransaction interface {
+	RollupCostData() RollupCostData
+	Gas() uint64
+}
+
+// TotalRollupCostFunc is used in the transaction pool to determine the total rollup cost,
+// consisting of both the data availability fee and the operator fee. It returns nil if
+// neither cost applies.
+type TotalRollupCostFunc func(tx RollupTransaction, blockTime uint64) *uint256.Int
+
 // l1CostFunc is an internal version of L1CostFunc that also returns the gasUsed for use in
 // receipts.
 type l1CostFunc func(rcd RollupCostData) (fee, gasUsed *big.Int)
@@ -161,7 +172,7 @@ func NewL1CostFunc(config *params.ChainConfig, statedb StateGetter) L1CostFunc {
 			return newL1CostFuncBedrock(config, statedb, blockTime)
 		}
 
-		l1BaseFeeScalar, l1BlobBaseFeeScalar := extractEcotoneFeeParams(l1FeeScalars)
+		l1BaseFeeScalar, l1BlobBaseFeeScalar := ExtractEcotoneFeeParams(l1FeeScalars)
 
 		if config.IsOptimismFjord(blockTime) {
 			return NewL1CostFuncFjord(
@@ -214,7 +225,7 @@ func NewOperatorCostFunc(config *params.ChainConfig, statedb StateGetter) Operat
 				return uint256.NewInt(0)
 			}
 		}
-		operatorFeeScalar, operatorFeeConstant := extractOperatorFeeParams(operatorFeeParams)
+		operatorFeeScalar, operatorFeeConstant := ExtractOperatorFeeParams(operatorFeeParams)
 
 		return newOperatorCostFunc(operatorFeeScalar, operatorFeeConstant)
 	}
@@ -243,6 +254,40 @@ func newOperatorCostFunc(operatorFeeScalar *big.Int, operatorFeeConstant *big.In
 		}
 
 		return feeU256
+	}
+}
+
+// NewTotalRollupCostFunc returns a function used for calculating the total rollup cost of a
+// transaction, or nil if this is not an op-stack chain. The total rollup cost is the data
+// availability fee plus, as of Isthmus, the operator fee charged for the transaction's gas limit.
+//
+// A total cost that doesn't fit into 256 bits is capped at the maximum uint256 value, which no
+// account balance can cover.
+func NewTotalRollupCostFunc(config *params.ChainConfig, statedb StateGetter) TotalRollupCostFunc {
+	if !config.IsOptimism() {
+		return nil
+	}
+	l1CostFn := NewL1CostFunc(config, statedb)
+	operatorCostFn := NewOperatorCostFunc(config, statedb)
+
+	return func(tx RollupTransaction, blockTime uint64) *uint256.Int {
+		l1Cost := l1CostFn(tx.RollupCostData(), blockTime)
+		operatorCost := operatorCostFn(tx.Gas(), blockTime)
+		if l1Cost == nil && operatorCost == nil {
+			return nil
+		}
+		total := new(uint256.Int)
+		if l1Cost != nil {
+			if overflow := total.SetFromBig(l1Cost); overflow {
+				return new(uint256.Int).SetAllOne()
+			}
+		}
+		if operatorCost != nil {
+			if _, overflow := total.AddOverflow(total, operatorCost); overflow {
+				return new(uint256.Int).SetAllOne()
+			}
+		}
+		return total
 	}
 }
 
@@ -515,14 +560,18 @@ func (cd RollupCostData) EstimatedDASize() *big.Int {
 	return b.Div(b, big.NewInt(1e6))
 }
 
-func extractEcotoneFeeParams(l1FeeParams []byte) (l1BaseFeeScalar, l1BlobBaseFeeScalar *big.Int) {
+// ExtractEcotoneFeeParams extracts the Ecotone base fee scalar and blob base fee scalar from
+// the contents of the L1Block contract's L1FeeScalarsSlot.
+func ExtractEcotoneFeeParams(l1FeeParams []byte) (l1BaseFeeScalar, l1BlobBaseFeeScalar *big.Int) {
 	offset := scalarSectionStart
 	l1BaseFeeScalar = new(big.Int).SetBytes(l1FeeParams[offset : offset+4])
 	l1BlobBaseFeeScalar = new(big.Int).SetBytes(l1FeeParams[offset+4 : offset+8])
 	return
 }
 
-func extractOperatorFeeParams(operatorFeeParams common.Hash) (operatorFeeScalar, operatorFeeConstant *big.Int) {
+// ExtractOperatorFeeParams extracts the Isthmus operator fee scalar and constant from the
+// contents of the L1Block contract's OperatorFeeParamsSlot.
+func ExtractOperatorFeeParams(operatorFeeParams common.Hash) (operatorFeeScalar, operatorFeeConstant *big.Int) {
 	operatorFeeScalar = new(big.Int).SetBytes(operatorFeeParams[20:24])
 	operatorFeeConstant = new(big.Int).SetBytes(operatorFeeParams[24:32])
 	return
