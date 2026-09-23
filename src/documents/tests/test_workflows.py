@@ -3,6 +3,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 from unittest import mock
 
+import pytest
 from django.contrib.auth.models import Group
 from django.contrib.auth.models import User
 from django.test import override_settings
@@ -10,20 +11,10 @@ from django.utils import timezone
 from guardian.shortcuts import assign_perm
 from guardian.shortcuts import get_groups_with_perms
 from guardian.shortcuts import get_users_with_perms
-import pytest
 from httpx import HTTPError
 from httpx import HTTPStatusError
 from pytest_httpx import HTTPXMock
 from rest_framework.test import APITestCase
-
-PUBLIC_TEST_IP = "52.207.186.75"
-
-
-def _fake_getaddrinfo(*ips: str):
-    def _getaddrinfo(host, port, *args, **kwargs):
-        return [(2, 1, 6, "", (ip, port or 0)) for ip in ips]
-
-    return _getaddrinfo
 
 from documents.signals.handlers import run_workflows
 from documents.signals.handlers import send_webhook
@@ -58,6 +49,15 @@ from documents.tests.utils import FileSystemAssertsMixin
 from documents.tests.utils import SampleDirMixin
 from paperless_mail.models import MailAccount
 from paperless_mail.models import MailRule
+
+PUBLIC_TEST_IP = "52.207.186.75"
+
+
+def _fake_getaddrinfo(*ips: str):
+    def _getaddrinfo(host, port, *args, **kwargs):
+        return [(2, 1, 6, "", (ip, port or 0)) for ip in ips]
+
+    return _getaddrinfo
 
 
 class TestWorkflows(
@@ -2853,14 +2853,14 @@ class TestWorkflows(
                 data={"message": "Test message"},
                 headers={},
                 files=None,
-                timeout=5.0,
-                follow_redirects=False,
             )
             mock_post.assert_called_with(
                 url="http://paperless-ngx.com",
                 data={"message": "Test message"},
                 headers={},
                 files=None,
+                timeout=5.0,
+                follow_redirects=False,
             )
 
     @mock.patch(
