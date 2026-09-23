@@ -86,14 +86,21 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 		return nil, fmt.Errorf("the Gitlab bridge only handle token credentials")
 	}
 
+	// API base is the instance root (scheme + host), not the project path.
+	baseURL, err := normalizeGitlabBaseURL(url)
+	if err != nil {
+		return nil, errors.Wrap(err, "base url")
+	}
+
 	// validate project url and get its ID
-	id, err := validateProjectURL(url, token)
+	id, err := validateProjectURL(baseURL, url, token)
 	if err != nil {
 		return nil, errors.Wrap(err, "project validation")
 	}
 
 	conf[core.ConfigKeyTarget] = target
 	conf[keyProjectID] = strconv.Itoa(id)
+	conf[keyGitlabBaseUrl] = baseURL
 
 	err = g.ValidateConfig(conf)
 	if err != nil {
@@ -296,19 +303,27 @@ func getValidGitlabRemoteURLs(remotes map[string]string) []string {
 			continue
 		}
 
-		urls = append(urls, fmt.Sprintf("%s%s", "gitlab.com", path))
+		baseURL, err := normalizeGitlabBaseURL(u)
+		if err != nil {
+			continue
+		}
+
+		urls = append(urls, baseURL+path)
 	}
 
 	return urls
 }
 
-func validateProjectURL(url string, token *auth.Token) (int, error) {
+func validateProjectURL(baseURL, url string, token *auth.Token) (int, error) {
 	projectPath, err := getProjectPath(url)
 	if err != nil {
 		return 0, err
 	}
 
-	client := buildClient(token)
+	client, err := buildClient(baseURL, token)
+	if err != nil {
+		return 0, err
+	}
 
 	project, _, err := client.Projects.GetProject(projectPath, &gitlab.GetProjectOptions{})
 	if err != nil {
