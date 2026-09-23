@@ -10,9 +10,20 @@ from django.utils import timezone
 from guardian.shortcuts import assign_perm
 from guardian.shortcuts import get_groups_with_perms
 from guardian.shortcuts import get_users_with_perms
+import pytest
+from httpx import HTTPError
 from httpx import HTTPStatusError
 from pytest_httpx import HTTPXMock
 from rest_framework.test import APITestCase
+
+PUBLIC_TEST_IP = "52.207.186.75"
+
+
+def _fake_getaddrinfo(*ips: str):
+    def _getaddrinfo(host, port, *args, **kwargs):
+        return [(2, 1, 6, "", (ip, port or 0)) for ip in ips]
+
+    return _getaddrinfo
 
 from documents.signals.handlers import run_workflows
 from documents.signals.handlers import send_webhook
@@ -2804,6 +2815,10 @@ class TestWorkflows(
             expected_str = "Error occurred parsing webhook headers"
             self.assertIn(expected_str, cm.output[1])
 
+    @mock.patch(
+        "documents.signals.handlers.socket.getaddrinfo",
+        _fake_getaddrinfo(PUBLIC_TEST_IP),
+    )
     @mock.patch("httpx.post")
     def test_workflow_webhook_send_webhook_task(self, mock_post):
         mock_post.return_value = mock.Mock(
@@ -2825,6 +2840,8 @@ class TestWorkflows(
                 content="Test message",
                 headers={},
                 files=None,
+                timeout=5.0,
+                follow_redirects=False,
             )
 
             expected_str = "Webhook sent to http://paperless-ngx.com"
@@ -2836,6 +2853,8 @@ class TestWorkflows(
                 data={"message": "Test message"},
                 headers={},
                 files=None,
+                timeout=5.0,
+                follow_redirects=False,
             )
             mock_post.assert_called_with(
                 url="http://paperless-ngx.com",
@@ -2844,6 +2863,10 @@ class TestWorkflows(
                 files=None,
             )
 
+    @mock.patch(
+        "documents.signals.handlers.socket.getaddrinfo",
+        _fake_getaddrinfo(PUBLIC_TEST_IP),
+    )
     @mock.patch("httpx.post")
     def test_workflow_webhook_send_webhook_retry(self, mock_http):
         mock_http.return_value.raise_for_status = mock.Mock(
@@ -2924,10 +2947,22 @@ class TestWorkflows(
         mock_post.assert_called_once()
 
 
+@pytest.fixture
+def resolve_to(monkeypatch):
+    def _resolve_to(*ips: str):
+        monkeypatch.setattr(
+            "documents.signals.handlers.socket.getaddrinfo",
+            _fake_getaddrinfo(*ips),
+        )
+
+    return _resolve_to
+
+
 class TestWebhookSend:
     def test_send_webhook_data_or_json(
         self,
         httpx_mock: HTTPXMock,
+        resolve_to,
     ):
         """
         GIVEN:
@@ -2937,6 +2972,7 @@ class TestWebhookSend:
         THEN:
             - data is sent as form-encoded and json, respectively
         """
+        resolve_to(PUBLIC_TEST_IP)
         httpx_mock.add_response(
             content=b"ok",
         )
@@ -2962,3 +2998,215 @@ class TestWebhookSend:
             as_json=True,
         )
         assert httpx_mock.get_request().headers["Content-Type"] == "application/json"
+
+
+class TestWebhookSecurity:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "ftp://paperless-ngx.com",
+            "file:///etc/passwd",
+            "gopher://paperless-ngx.com",
+            "http:///nohost",
+        ],
+    )
+    def test_blocks_invalid_scheme_or_hostname(self, httpx_mock: HTTPXMock, url):
+        """
+        GIVEN:
+            - URL with a non-http(s) scheme or no hostname
+        WHEN:
+            - send_webhook is called
+        THEN:
+            - The webhook is blocked and no request is made
+        """
+        with pytest.raises(ValueError, match="Invalid URL scheme or hostname"):
+            send_webhook(url=url, data="", headers={}, files=None)
+        assert httpx_mock.get_requests() == []
+
+    def test_blocks_disallowed_port(self, httpx_mock: HTTPXMock, resolve_to):
+        """
+        GIVEN:
+            - URL with a port not in the allowed list
+        WHEN:
+            - send_webhook is called
+        THEN:
+            - The webhook is blocked and no request is made
+        """
+        resolve_to(PUBLIC_TEST_IP)
+        with pytest.raises(ValueError, match="port not permitted"):
+            send_webhook(
+                url="http://paperless-ngx.com:8080",
+                data="",
+                headers={},
+                files=None,
+            )
+        assert httpx_mock.get_requests() == []
+
+    @override_settings(WEBHOOKS_ALLOWED_PORTS=set())
+    def test_empty_allowed_ports_allows_any_port(
+        self,
+        httpx_mock: HTTPXMock,
+        resolve_to,
+    ):
+        resolve_to(PUBLIC_TEST_IP)
+        httpx_mock.add_response(content=b"ok")
+        send_webhook(
+            url="http://paperless-ngx.com:8080",
+            data="",
+            headers={},
+            files=None,
+        )
+        assert httpx_mock.get_request().url.port == 8080
+
+    @pytest.mark.parametrize(
+        "ip",
+        [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:127.0.0.1",
+        ],
+    )
+    def test_blocks_private_loopback_linklocal(
+        self,
+        httpx_mock: HTTPXMock,
+        resolve_to,
+        ip,
+    ):
+        """
+        GIVEN:
+            - Hostname resolving to a non-public address
+        WHEN:
+            - send_webhook is called
+        THEN:
+            - The webhook is blocked and no request is made
+        """
+        resolve_to(ip)
+        with pytest.raises(ValueError, match="Destination host is not allowed"):
+            send_webhook(
+                url="http://paperless-ngx.com",
+                data="",
+                headers={},
+                files=None,
+            )
+        assert httpx_mock.get_requests() == []
+
+    def test_blocks_if_any_resolved_ip_is_internal(
+        self,
+        httpx_mock: HTTPXMock,
+        resolve_to,
+    ):
+        resolve_to(PUBLIC_TEST_IP, "127.0.0.1")
+        with pytest.raises(ValueError):
+            send_webhook(
+                url="http://paperless-ngx.com",
+                data="",
+                headers={},
+                files=None,
+            )
+        assert httpx_mock.get_requests() == []
+
+    def test_blocks_unresolvable_host(self, httpx_mock: HTTPXMock, monkeypatch):
+        def _fail(*args, **kwargs):
+            raise OSError("no such host")
+
+        monkeypatch.setattr("documents.signals.handlers.socket.getaddrinfo", _fail)
+        with pytest.raises(ValueError):
+            send_webhook(
+                url="http://does-not-exist.invalid",
+                data="",
+                headers={},
+                files=None,
+            )
+        assert httpx_mock.get_requests() == []
+
+    @override_settings(WEBHOOKS_ALLOW_INTERNAL_REQUESTS=True)
+    def test_allows_internal_when_enabled(self, httpx_mock: HTTPXMock, resolve_to):
+        """
+        GIVEN:
+            - WEBHOOKS_ALLOW_INTERNAL_REQUESTS enabled
+        WHEN:
+            - send_webhook is called for an internal destination
+        THEN:
+            - The webhook is sent
+        """
+        resolve_to("127.0.0.1")
+        httpx_mock.add_response(content=b"ok")
+        send_webhook(url="http://127.0.0.1", data="", headers={}, files=None)
+        assert httpx_mock.get_request().url.host == "127.0.0.1"
+
+    def test_allows_public_ip_and_sends(self, httpx_mock: HTTPXMock, resolve_to):
+        """
+        GIVEN:
+            - Hostname resolving to a public address
+        WHEN:
+            - send_webhook is called
+        THEN:
+            - The webhook is sent
+        """
+        resolve_to(PUBLIC_TEST_IP)
+        httpx_mock.add_response(content=b"ok")
+        send_webhook(
+            url="https://paperless-ngx.com",
+            data="hi",
+            headers={},
+            files=None,
+        )
+        req = httpx_mock.get_request()
+        assert req.url.host == "paperless-ngx.com"
+        assert req.content == b"hi"
+
+    def test_follow_redirects_disabled(self, httpx_mock: HTTPXMock, resolve_to):
+        """
+        GIVEN:
+            - Destination responds with a redirect to an internal address
+        WHEN:
+            - send_webhook is called
+        THEN:
+            - The redirect is not followed and an error is raised
+        """
+        resolve_to(PUBLIC_TEST_IP)
+        httpx_mock.add_response(
+            status_code=302,
+            headers={"location": "http://127.0.0.1/secret"},
+        )
+        with pytest.raises(HTTPError):
+            send_webhook(
+                url="http://paperless-ngx.com",
+                data="",
+                headers={},
+                files=None,
+            )
+        assert len(httpx_mock.get_requests()) == 1
+
+    def test_strips_user_supplied_host_header(
+        self,
+        httpx_mock: HTTPXMock,
+        resolve_to,
+    ):
+        """
+        GIVEN:
+            - Webhook headers containing a Host header
+        WHEN:
+            - send_webhook is called
+        THEN:
+            - The Host header of the destination URL is used instead
+        """
+        resolve_to(PUBLIC_TEST_IP)
+        httpx_mock.add_response(content=b"ok")
+        send_webhook(
+            url="http://paperless-ngx.com",
+            data="",
+            headers={"Host": "evil.test", "X-Custom": "1"},
+            files=None,
+        )
+        req = httpx_mock.get_request()
+        assert req.headers["Host"] == "paperless-ngx.com"
+        assert req.headers["X-Custom"] == "1"
