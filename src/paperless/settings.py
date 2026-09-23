@@ -1396,6 +1396,29 @@ EMAIL_ENABLE_GPG_DECRYPTOR: Final[bool] = __get_boolean(
     "PAPERLESS_ENABLE_GPG_DECRYPTOR",
 )
 
+###############################################################################
+# Webhooks                                                                    #
+###############################################################################
+
+WEBHOOKS_ALLOWED_SCHEMES: Final[set[str]] = {
+    s.lower()
+    for s in __get_list(
+        "PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES",
+        ["http", "https"],
+    )
+}
+WEBHOOKS_ALLOWED_PORTS: Final[set[int]] = {
+    int(p)
+    for p in __get_list(
+        "PAPERLESS_WEBHOOKS_ALLOWED_PORTS",
+        [],
+    )
+}
+WEBHOOKS_ALLOW_INTERNAL_REQUESTS: Final[bool] = __get_boolean(
+    "PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS",
+    "true",
+)
+
 
 ###############################################################################
 # Soft Delete                                                                 #

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import shutil
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING
 
 import httpx
@@ -660,6 +663,29 @@ def run_workflows_updated(sender, document: Document, logging_group=None, **kwar
     )
 
 
+def _is_public_ip(ip: str) -> bool:
+    try:
+        obj = ipaddress.ip_address(ip)
+        return not (
+            obj.is_private
+            or obj.is_loopback
+            or obj.is_link_local
+            or obj.is_multicast
+            or obj.is_unspecified
+            or obj.is_reserved
+        )
+    except ValueError:
+        return False
+
+
+def _resolve_first_ip(host: str) -> str | None:
+    try:
+        info = socket.getaddrinfo(host, None)
+        return info[0][4][0] if info else None
+    except Exception:
+        return None
+
+
 @shared_task(
     retry_backoff=True,
     autoretry_for=(httpx.HTTPStatusError,),
@@ -674,10 +700,34 @@ def send_webhook(
     *,
     as_json: bool = False,
 ):
+    p = urlparse(url)
+    if p.scheme.lower() not in settings.WEBHOOKS_ALLOWED_SCHEMES or not p.hostname:
+        logger.warning("Webhook blocked: invalid scheme/hostname")
+        raise ValueError("Invalid URL scheme or hostname.")
+
+    port = p.port or (443 if p.scheme.lower() == "https" else 80)
+    if (
+        len(settings.WEBHOOKS_ALLOWED_PORTS) > 0
+        and port not in settings.WEBHOOKS_ALLOWED_PORTS
+    ):
+        logger.warning("Webhook blocked: port not permitted")
+        raise ValueError("Destination port not permitted.")
+
+    ip = _resolve_first_ip(p.hostname)
+    if not ip or (
+        not _is_public_ip(ip) and not settings.WEBHOOKS_ALLOW_INTERNAL_REQUESTS
+    ):
+        logger.warning("Webhook blocked: destination not allowed")
+        raise ValueError("Destination host is not allowed.")
+
     try:
+        safe_headers = {
+            k: v for k, v in (headers or {}).items() if k.lower() != "host"
+        }
+        safe_headers["Host"] = p.hostname if p.port is None else f"{p.hostname}:{port}"
         post_args = {
             "url": url,
-            "headers": headers,
+            "headers": safe_headers,
             "files": files,
         }
         if as_json:
@@ -687,18 +737,11 @@ def send_webhook(
         else:
             post_args["content"] = data
 
-        httpx.post(
-            **post_args,
-        ).raise_for_status()
-        logger.info(
-            f"Webhook sent to {url}",
-        )
-    except Exception as e:
-        logger.error(
-            f"Failed attempt sending webhook to {url}: {e}",
-        )
-        raise e
-
+        with httpx.Client(
+            timeout=httpx.Timeout(5.0),
+            follow_redirects=False,
+        ) as client:
+            client.post(**post_args).raise_for_status()
         logger.info(
             f"Webhook sent to {url}",
         )
