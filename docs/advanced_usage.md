@@ -516,6 +516,39 @@ You can also use a custom `slugify` filter to slufigy text:
 {{ title | slugify }}
 ```
 
+You can also use the custom `localize_date` filter to format dates and datetimes according to a locale, including
+translated month and weekday names:
+
+```jinja
+{{ document.created | localize_date('EEEE, d. MMMM yyyy', 'de_DE') }}/{{ title }}
+```
+
+For a document created on October 26, 2023, this results in `Donnerstag, 26. Oktober 2023/Title.pdf`.
+
+The filter takes two arguments:
+
+-   `format`: One of the preset formats `short`, `medium`, `long` or `full`, or a custom
+    [Unicode date pattern](https://babel.pocoo.org/en/latest/dates.html#date-fields) such as `dd.MM.yyyy` or `EEEE, MMM d, yyyy`.
+    Note these patterns use a different syntax than the `datetime` filter (e.g. `yyyy` instead of `%Y`).
+-   `locale`: A locale identifier such as `en_US`, `en_GB`, `de_DE` or `fr_FR`.
+
+Some examples, again for a document created on October 26, 2023:
+
+-   `{{ document.created | localize_date('MMMM d, yyyy', 'en_US') }}` results in `October 26, 2023`
+-   `{{ document.created | localize_date('dd.MM.yyyy', 'de_DE') }}` results in `26.10.2023`
+-   `{{ document.created | localize_date('MMMM', 'es_ES') }}` results in `octubre`
+-   `{{ document.created | localize_date('EEEE', 'fr_FR') }}` results in `jeudi`
+-   `{{ document.created | localize_date('full', 'it_IT') }}` results in `giovedì 26 ottobre 2023`
+
+The filter also accepts datetimes, such as `document.added`, allowing time and time zone fields in the pattern, for example
+`{{ document.added | localize_date('yyyy-MM-dd HH.mm zzzz', 'de_DE') }}`. Datetimes are formatted in their own time zone, which
+for `document.added` is UTC.
+
+!!! warning
+
+    The formatted value is inserted as-is, so a `/` in the result creates a directory. Some presets contain
+    slashes for certain locales, e.g. `short` for `en_US` gives `10/26/23`.
+
 ## Automatic recovery of invalid PDFs {#pdf-recovery}
 
 Paperless will attempt to "clean" certain invalid PDFs with `qpdf` before processing if, for example, the mime_type
