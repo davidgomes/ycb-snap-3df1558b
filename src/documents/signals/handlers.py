@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import shutil
+import socket
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -660,9 +662,73 @@ def run_workflows_updated(sender, document: Document, logging_group=None, **kwar
     )
 
 
+WEBHOOK_TIMEOUT_SECONDS = 5.0
+WEBHOOK_REDIRECT_STATUS_CODES = frozenset(
+    {
+        httpx.codes.MOVED_PERMANENTLY,
+        httpx.codes.FOUND,
+        httpx.codes.SEE_OTHER,
+        httpx.codes.TEMPORARY_REDIRECT,
+        httpx.codes.PERMANENT_REDIRECT,
+    },
+)
+
+
+class WebhookRedirectError(httpx.HTTPStatusError):
+    """
+    Raised when a webhook destination responds with a redirect. Redirects are
+    never followed because their target has not been validated, and they are not
+    retried because the response would not change.
+    """
+
+
+def _is_public_ip(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def validate_webhook_url(url: str) -> None:
+    """
+    Raises a ValueError if the webhook URL uses a scheme, host or port which is
+    not permitted by the WEBHOOKS_* settings.
+
+    The URL is parsed with httpx so the validated host is the one httpx connects to.
+    """
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL as e:
+        raise ValueError(f"Invalid URL: {e}") from e
+
+    allowed_schemes = {scheme.lower() for scheme in settings.WEBHOOKS_ALLOWED_SCHEMES}
+    if parsed.scheme not in allowed_schemes or not parsed.raw_host:
+        raise ValueError("Invalid URL scheme or hostname.")
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if settings.WEBHOOKS_ALLOWED_PORTS and port not in settings.WEBHOOKS_ALLOWED_PORTS:
+        raise ValueError(f"Destination port {port} is not permitted.")
+
+    if settings.WEBHOOKS_ALLOW_INTERNAL_REQUESTS:
+        return
+
+    host = parsed.raw_host.decode("ascii")
+    try:
+        addresses = {
+            info[4][0]
+            for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        }
+    except (OSError, UnicodeError) as e:
+        raise ValueError(f"Unable to resolve destination host {host}.") from e
+    # Every resolved address is checked, as the connection may use any of them
+    if not addresses or not all(_is_public_ip(address) for address in addresses):
+        raise ValueError(f"Destination host {host} is not allowed.")
+
+
 @shared_task(
     retry_backoff=True,
     autoretry_for=(httpx.HTTPStatusError,),
+    dont_autoretry_for=(WebhookRedirectError,),
     max_retries=3,
     throws=(httpx.HTTPError,),
 )
@@ -675,10 +741,23 @@ def send_webhook(
     as_json: bool = False,
 ):
     try:
+        validate_webhook_url(url)
+    except ValueError as e:
+        logger.warning(
+            f"Webhook to {url} blocked: {e}",
+        )
+        raise
+
+    try:
         post_args = {
             "url": url,
-            "headers": headers,
+            # httpx sets the Host header from the validated URL
+            "headers": {
+                k: v for k, v in (headers or {}).items() if k.strip().lower() != "host"
+            },
             "files": files,
+            "timeout": WEBHOOK_TIMEOUT_SECONDS,
+            "follow_redirects": False,
         }
         if as_json:
             post_args["json"] = data
@@ -687,18 +766,17 @@ def send_webhook(
         else:
             post_args["content"] = data
 
-        httpx.post(
+        response = httpx.post(
             **post_args,
-        ).raise_for_status()
-        logger.info(
-            f"Webhook sent to {url}",
         )
-    except Exception as e:
-        logger.error(
-            f"Failed attempt sending webhook to {url}: {e}",
-        )
-        raise e
-
+        if response.status_code in WEBHOOK_REDIRECT_STATUS_CODES:
+            raise WebhookRedirectError(
+                f"Redirect '{response.status_code}' to "
+                f"'{response.headers.get('location', '')}' was not followed",
+                request=response.request,
+                response=response,
+            )
+        response.raise_for_status()
         logger.info(
             f"Webhook sent to {url}",
         )
