@@ -63,19 +63,44 @@ func TestDAFootprintMining(t *testing.T) {
 			requireTxGas(t, block, receipts)
 		})
 	})
+	t.Run("jovian-forced-txs", func(t *testing.T) {
+		testMineAndExecuteForced(t, 5, 0, jovianConfig(), func(t *testing.T, block *types.Block, receipts []*types.Receipt) {
+			require.Len(t, receipts, 6) // 1 deposit tx and 5 forced txs
+			requireDAFootprint(t, block, receipts)
+		})
+	})
+	t.Run("jovian-forced-and-pool-txs", func(t *testing.T) {
+		// 10 forced txs use up part of the DA footprint budget, so the 17 limit
+		// from the pool-only case no longer fits in the block.
+		testMineAndExecuteForced(t, 10, 17, jovianConfig(), func(t *testing.T, block *types.Block, receipts []*types.Receipt) {
+			require.Len(t, receipts, 19) // 1 deposit tx, 10 forced txs and 8 pool txs
+			requireDAFootprint(t, block, receipts)
+		})
+	})
 }
 
 func testMineAndExecute(t *testing.T, numTxs uint64, cfg *params.ChainConfig, assertFn func(t *testing.T, block *types.Block, receipts []*types.Receipt)) {
+	testMineAndExecuteForced(t, 0, numTxs, cfg, assertFn)
+}
+
+// testMineAndExecuteForced builds a block with a deposit tx and numForcedTxs force-included txs,
+// followed by numPoolTxs txs from the txpool, and then imports it into the chain.
+func testMineAndExecuteForced(t *testing.T, numForcedTxs, numPoolTxs uint64, cfg *params.ChainConfig, assertFn func(t *testing.T, block *types.Block, receipts []*types.Receipt)) {
 	db := rawdb.NewMemoryDatabase()
 	w, b := newTestWorker(t, cfg, beacon.New(ethash.NewFaker()), db, 0)
 
-	// Start from nonce 1 to avoid colliding with the preloaded pending tx.
-	txs := genTxs(1, numTxs)
+	forcedTxs := append(types.Transactions{types.NewTx(&types.DepositTx{})}, genTxs(0, numForcedTxs)...)
+	noTxs := numPoolTxs == 0
+	if !noTxs {
+		// Start from nonce 1 to avoid colliding with the preloaded pending tx. Pool txs with nonces
+		// already used by forced txs keep the pool nonces contiguous and are skipped by the miner.
+		txs := genTxs(1, numForcedTxs+numPoolTxs)
 
-	// Add to txpool for the miner to pick up.
-	if errs := b.txPool.Add(txs, false); len(errs) > 0 {
-		for _, err := range errs {
-			require.NoError(t, err, "failed adding tx to pool")
+		// Add to txpool for the miner to pick up.
+		if errs := b.txPool.Add(txs, false); len(errs) > 0 {
+			for _, err := range errs {
+				require.NoError(t, err, "failed adding tx to pool")
+			}
 		}
 	}
 
@@ -85,7 +110,8 @@ func testMineAndExecute(t *testing.T, numTxs uint64, cfg *params.ChainConfig, as
 		withdrawals:   types.Withdrawals{},
 		beaconRoot:    new(common.Hash),
 		gasLimit:      ptr(uint64(1e6)), // Small gas limit to easily fill block
-		txs:           types.Transactions{types.NewTx(&types.DepositTx{})},
+		txs:           forcedTxs,
+		noTxs:         noTxs,
 		eip1559Params: eip1559.EncodeHolocene1559Params(250, 6),
 	}
 	if cfg.IsJovian(b.chain.CurrentBlock().Time) {
