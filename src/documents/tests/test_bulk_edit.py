@@ -564,6 +564,36 @@ class TestPDFActions(DirectoriesMixin, TestCase):
     @mock.patch("documents.bulk_edit.delete.si")
     @mock.patch("documents.tasks.consume_file.s")
     @mock.patch("documents.bulk_edit.chain")
+    def test_merge_non_pdf_uses_archive_version(
+        self,
+        mock_chain,
+        mock_consume_file,
+        mock_delete_documents,
+    ):
+        """
+        GIVEN:
+            - A non-PDF document with an archive version
+        WHEN:
+            - Merge action is called with it and a PDF document
+        THEN:
+            - The archive version is used and both documents are merged
+        """
+        img_archive = self.dirs.archive_dir / "sample_image_archive.pdf"
+        shutil.copy(self.doc3.source_path, img_archive)
+        self.img_doc.archive_filename = img_archive
+        self.img_doc.save()
+
+        doc_ids = [self.doc1.id, self.img_doc.id]
+
+        result = bulk_edit.merge(doc_ids, delete_originals=True)
+        self.assertEqual(result, "OK")
+
+        mock_consume_file.assert_called()
+        mock_delete_documents.assert_called_once_with(doc_ids)
+
+    @mock.patch("documents.bulk_edit.delete.si")
+    @mock.patch("documents.tasks.consume_file.s")
+    @mock.patch("documents.bulk_edit.chain")
     def test_merge_and_delete_originals(
         self,
         mock_chain,

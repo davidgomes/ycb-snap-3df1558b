@@ -333,7 +333,10 @@ def merge(
     for doc_id in doc_ids:
         doc = qs.get(id=doc_id)
         try:
-            with pikepdf.open(str(doc.source_path)) as pdf:
+            doc_path = (
+                doc.archive_path if doc.has_archive_version else doc.source_path
+            )
+            with pikepdf.open(str(doc_path)) as pdf:
                 version = max(version, pdf.pdf_version)
                 merged_pdf.pages.extend(pdf.pages)
             affected_docs.append(doc.id)
