@@ -48,6 +48,30 @@ matcher.
 
     Defaults to no prefix.
 
+    When set, the same prefix is applied to every Redis cache store, including the optional database read cache.
+
+#### [`PAPERLESS_DB_READ_CACHE_ENABLED=<bool>`](#PAPERLESS_DB_READ_CACHE_ENABLED) {#PAPERLESS_DB_READ_CACHE_ENABLED}
+
+: Cache Django ORM read queries in Redis. Repeated identical queries are served from the cache until the entry expires or an administrator clears it. While this is off (the default), queries always hit the database and the caching app is not loaded.
+
+    Defaults to `false`.
+
+    After changing data outside the application (restores, manual SQL), clear the cache with `invalidate_db_cache` (or `invalidate_cachalot` when the cache is enabled).
+
+#### [`PAPERLESS_READ_CACHE_TTL=<seconds>`](#PAPERLESS_READ_CACHE_TTL) {#PAPERLESS_READ_CACHE_TTL}
+
+: How long a cached database read stays valid.
+
+    Allowed values are between `1` and `31536000` (one year). Invalid or non-positive values are ignored and the default is used.
+
+    Defaults to `3600` (one hour).
+
+#### [`PAPERLESS_READ_CACHE_REDIS_URL=<url>`](#PAPERLESS_READ_CACHE_REDIS_URL) {#PAPERLESS_READ_CACHE_REDIS_URL}
+
+: Redis instance used for the database read cache.
+
+    Defaults to the same URL as [`PAPERLESS_REDIS`](#PAPERLESS_REDIS) (`redis://localhost:6379` when that is unset).
+
 ### Database
 
 By default, Paperless uses **SQLite** with a database stored at `data/db.sqlite3`.
