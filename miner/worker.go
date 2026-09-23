@@ -56,8 +56,10 @@ var (
 	errBlockInterruptedByTimeout  = errors.New("timeout while building block")
 	errBlockInterruptedByResolve  = errors.New("payload resolution while building block")
 
-	// OP-Stack addition
-	errSupervisorInFailsafe = errors.New("supervisor in failsafe")
+	// OP-Stack additions
+	errSupervisorInFailsafe    = errors.New("supervisor in failsafe")
+	errDAFootprintLimitReached = errors.New("DA footprint block limit reached")
+	errMissingMinBaseFee       = errors.New("missing minBaseFee")
 
 	txConditionalRejectedCounter = metrics.NewRegisteredCounter("miner/transactionConditional/rejected", nil)
 	txConditionalMinedTimer      = metrics.NewRegisteredTimer("miner/transactionConditional/elapsedtime", nil)
@@ -84,11 +86,31 @@ type environment struct {
 
 	noTxs  bool            // true if we are reproducing a block, and do not have to check interop txs
 	rpcCtx context.Context // context to control block-building RPC work. No RPC allowed if nil.
+
+	daFootprintGasScalar uint16 // DA footprint gas scalar of the block, zero if the DA footprint block limit is inactive
+	daFootprint          uint64 // total DA footprint of the transactions in the block
 }
 
 // txFits reports whether the transaction fits into the block size limit.
 func (env *environment) txFitsSize(tx *types.Transaction) bool {
 	return env.size+tx.Size() < params.MaxBlockSize-maxBlockSizeBufferZone
+}
+
+// txDAFootprint returns the DA footprint of the transaction, which is zero if the DA footprint
+// block limit is inactive.
+func (env *environment) txDAFootprint(tx *types.Transaction) uint64 {
+	if env.daFootprintGasScalar == 0 {
+		return 0
+	}
+	return tx.DAFootprint(env.daFootprintGasScalar)
+}
+
+// daFootprintLeft returns how much DA footprint can still be added to the block.
+func (env *environment) daFootprintLeft() uint64 {
+	if env.daFootprint >= env.header.GasLimit {
+		return 0
+	}
+	return env.header.GasLimit - env.daFootprint
 }
 
 const (
@@ -204,6 +226,11 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 		return &newPayloadResult{err: errInterruptedUpdate}
 	}
 
+	// Since Jovian, the block's gas used also accounts for the DA footprint of its transactions.
+	if work.daFootprintGasScalar != 0 {
+		work.header.GasUsed = max(work.header.GasUsed, work.daFootprint)
+	}
+
 	allLogs := make([]*types.Log, 0)
 	for _, r := range work.receipts {
 		allLogs = append(allLogs, r.Logs...)
@@ -309,10 +336,10 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 		// configure the gas limit of pending blocks with the miner gas limit config when using optimism
 		header.GasLimit = miner.config.GasCeil
 	}
+	if err := miner.validateEIP1559Params(genParams, header.Time); err != nil {
+		return nil, err
+	}
 	if cfg := miner.chainConfig; cfg.IsHolocene(header.Time) {
-		if err := eip1559.ValidateHolocene1559Params(genParams.eip1559Params); err != nil {
-			return nil, err
-		}
 		// If this is a holocene block and the params are 0, we must convert them to their previous
 		// constants in the header.
 		d, e := eip1559.DecodeHolocene1559Params(genParams.eip1559Params)
@@ -321,8 +348,6 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 			e = miner.chainConfig.ElasticityMultiplier()
 		}
 		header.Extra = eip1559.EncodeOptimismExtraData(cfg, header.Time, d, e, genParams.minBaseFee)
-	} else if genParams.eip1559Params != nil {
-		return nil, errors.New("got eip1559 params, expected none")
 	}
 	// Run the consensus preparation with the default or customized consensus engine.
 	// Note that the `header.Time` may be changed.
@@ -349,6 +374,13 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 		return nil, err
 	}
 	env.noTxs = genParams.noTxs
+	if miner.chainConfig.IsDAFootprintBlockLimit(header.Time) {
+		// The scalar is read from the L1 attributes deposit, which is the first forced transaction.
+		env.daFootprintGasScalar, err = types.DAFootprintGasScalar(genParams.txs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine DA footprint gas scalar: %w", err)
+		}
+	}
 	if header.ParentBeaconRoot != nil {
 		core.ProcessBeaconBlockRoot(*header.ParentBeaconRoot, env.evm)
 	}
@@ -468,6 +500,10 @@ func (miner *Miner) commitBlobTransaction(env *environment, tx *types.Transactio
 
 // applyTransaction runs the transaction. If execution fails, state and gas pool are reverted.
 func (miner *Miner) applyTransaction(env *environment, tx *types.Transaction) (*types.Receipt, error) {
+	daFootprint := env.txDAFootprint(tx)
+	if left := env.daFootprintLeft(); daFootprint > left {
+		return nil, fmt.Errorf("%w: have %d, want %d", errDAFootprintLimitReached, left, daFootprint)
+	}
 	var (
 		snap = env.state.Snapshot()
 		gp   = env.gasPool.Gas()
@@ -476,8 +512,10 @@ func (miner *Miner) applyTransaction(env *environment, tx *types.Transaction) (*
 	if err != nil {
 		env.state.RevertToSnapshot(snap)
 		env.gasPool.SetGas(gp)
+		return receipt, err
 	}
-	return receipt, err
+	env.daFootprint += daFootprint
+	return receipt, nil
 }
 
 func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *transactionsByPriceAndNonce, interrupt *atomic.Int32) error {
@@ -580,6 +618,17 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 		// maximum we allow, don't add any more txs to the payload.
 		if !env.txFitsSize(tx) {
 			break
+		}
+
+		// OP-Stack addition: Jovian DA footprint block limit
+		if daFootprint, left := env.txDAFootprint(tx), env.daFootprintLeft(); daFootprint > left {
+			log.Trace("Not enough DA footprint left for transaction", "hash", ltx.Hash, "left", left, "needed", daFootprint)
+			txs.Pop()
+			// Stop early if not even a transaction of minimum DA size would fit anymore.
+			if left < types.MinTransactionSize.Uint64()*uint64(env.daFootprintGasScalar) {
+				break
+			}
+			continue
 		}
 		// Error may be ignored here. The error has already been checked
 		// during transaction acceptance in the transaction pool.
@@ -749,9 +798,30 @@ func (miner *Miner) validateParams(genParams *generateParams) (time.Duration, er
 		return 0, fmt.Errorf("invalid timestamp, parent %d given %d", parent.Time, genParams.timestamp)
 	}
 
+	if err := miner.validateEIP1559Params(genParams, genParams.timestamp); err != nil {
+		return 0, err
+	}
+
 	// minimum payload build time of 2s
 	if blockTime < 2 {
 		blockTime = 2
 	}
 	return time.Duration(blockTime) * time.Second, nil
+}
+
+// validateEIP1559Params validates the Holocene EIP-1559 parameters and the Jovian minimum base
+// fee of the given parameters against the forks active at the given block timestamp.
+func (miner *Miner) validateEIP1559Params(genParams *generateParams, timestamp uint64) error {
+	cfg := miner.chainConfig
+	if cfg.IsHolocene(timestamp) {
+		if err := eip1559.ValidateHolocene1559Params(genParams.eip1559Params); err != nil {
+			return err
+		}
+	} else if genParams.eip1559Params != nil {
+		return errors.New("got eip1559 params, expected none")
+	}
+	if cfg.IsMinBaseFee(timestamp) && genParams.minBaseFee == nil {
+		return errMissingMinBaseFee
+	}
+	return nil
 }
