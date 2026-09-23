@@ -42,6 +42,18 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 		return nil, fmt.Errorf("you must provide a project URL to configure this bridge with a token")
 	}
 
+	var baseUrl string
+
+	switch {
+	case params.BaseURL != "":
+		baseUrl = params.BaseURL
+	default:
+		baseUrl, err = promptBaseUrlOptions()
+		if err != nil {
+			return nil, errors.Wrap(err, "base url prompt")
+		}
+	}
+
 	var url string
 
 	// get project url
@@ -50,10 +62,14 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 		url = params.URL
 	default:
 		// terminal prompt
-		url, err = promptURL(repo)
+		url, err = promptURL(repo, baseUrl)
 		if err != nil {
 			return nil, errors.Wrap(err, "url prompt")
 		}
+	}
+
+	if !strings.HasPrefix(url, strings.TrimRight(baseUrl, "/")) {
+		return nil, fmt.Errorf("base URL (%s) doesn't match the project URL (%s)", baseUrl, url)
 	}
 
 	user, err := repo.GetUserIdentity()
@@ -75,7 +91,7 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 	case params.TokenRaw != "":
 		cred = auth.NewToken(user.Id(), params.TokenRaw, target)
 	default:
-		cred, err = promptTokenOptions(repo, user.Id())
+		cred, err = promptTokenOptions(repo, user.Id(), baseUrl)
 		if err != nil {
 			return nil, err
 		}
@@ -87,13 +103,14 @@ func (g *Gitlab) Configure(repo *cache.RepoCache, params core.BridgeParams) (cor
 	}
 
 	// validate project url and get its ID
-	id, err := validateProjectURL(url, token)
+	id, err := validateProjectURL(baseUrl, url, token)
 	if err != nil {
 		return nil, errors.Wrap(err, "project validation")
 	}
 
 	conf[core.ConfigKeyTarget] = target
 	conf[keyProjectID] = strconv.Itoa(id)
+	conf[keyGitlabBaseUrl] = baseUrl
 
 	err = g.ValidateConfig(conf)
 	if err != nil {
@@ -117,7 +134,9 @@ func (g *Gitlab) ValidateConfig(conf core.Configuration) error {
 	} else if v != target {
 		return fmt.Errorf("unexpected target name: %v", v)
 	}
-
+	if _, ok := conf[keyGitlabBaseUrl]; !ok {
+		return fmt.Errorf("missing %s key", keyGitlabBaseUrl)
+	}
 	if _, ok := conf[keyProjectID]; !ok {
 		return fmt.Errorf("missing %s key", keyProjectID)
 	}
@@ -125,7 +144,65 @@ func (g *Gitlab) ValidateConfig(conf core.Configuration) error {
 	return nil
 }
 
-func promptTokenOptions(repo repository.RepoConfig, userId entity.Id) (auth.Credential, error) {
+func promptBaseUrlOptions() (string, error) {
+	for {
+		fmt.Printf("Gitlab base url:\n")
+		fmt.Printf("[0]: https://gitlab.com\n")
+		fmt.Printf("[1]: enter your own base url\n")
+		fmt.Printf("Select option: ")
+
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+
+		line = strings.TrimSpace(line)
+
+		index, err := strconv.Atoi(line)
+		if err != nil || index < 0 || index > 1 {
+			fmt.Println("invalid input")
+			continue
+		}
+
+		switch index {
+		case 0:
+			return defaultBaseURL, nil
+		case 1:
+			return promptBaseUrl()
+		}
+	}
+}
+
+func promptBaseUrl() (string, error) {
+	for {
+		fmt.Print("base url: ")
+
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+
+		line = strings.TrimSpace(line)
+
+		ok, err := validateBaseUrl(line)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return line, nil
+		}
+	}
+}
+
+func validateBaseUrl(baseUrl string) (bool, error) {
+	u, err := url.Parse(baseUrl)
+	if err != nil {
+		return false, err
+	}
+	return u.Scheme != "" && u.Host != "", nil
+}
+
+func promptTokenOptions(repo repository.RepoConfig, userId entity.Id, baseUrl string) (auth.Credential, error) {
 	for {
 		creds, err := auth.List(repo, auth.WithUserId(userId), auth.WithTarget(target), auth.WithKind(auth.KindToken))
 		if err != nil {
@@ -134,7 +211,7 @@ func promptTokenOptions(repo repository.RepoConfig, userId entity.Id) (auth.Cred
 
 		// if we don't have existing token, fast-track to the token prompt
 		if len(creds) == 0 {
-			value, err := promptToken()
+			value, err := promptToken(baseUrl)
 			if err != nil {
 				return nil, err
 			}
@@ -176,7 +253,7 @@ func promptTokenOptions(repo repository.RepoConfig, userId entity.Id) (auth.Cred
 
 		switch index {
 		case 1:
-			value, err := promptToken()
+			value, err := promptToken(baseUrl)
 			if err != nil {
 				return nil, err
 			}
@@ -187,8 +264,8 @@ func promptTokenOptions(repo repository.RepoConfig, userId entity.Id) (auth.Cred
 	}
 }
 
-func promptToken() (string, error) {
-	fmt.Println("You can generate a new token by visiting https://gitlab.com/profile/personal_access_tokens.")
+func promptToken(baseUrl string) (string, error) {
+	fmt.Printf("You can generate a new token by visiting %s/profile/personal_access_tokens.\n", strings.TrimRight(baseUrl, "/"))
 	fmt.Println("Choose 'Create personal access token' and set the necessary access scope for your repository.")
 	fmt.Println()
 	fmt.Println("'api' access scope: to be able to make api calls")
@@ -216,14 +293,14 @@ func promptToken() (string, error) {
 	}
 }
 
-func promptURL(repo repository.RepoCommon) (string, error) {
+func promptURL(repo repository.RepoCommon, baseUrl string) (string, error) {
 	// remote suggestions
 	remotes, err := repo.GetRemotes()
 	if err != nil {
 		return "", errors.Wrap(err, "getting remotes")
 	}
 
-	validRemotes := getValidGitlabRemoteURLs(remotes)
+	validRemotes := getValidGitlabRemoteURLs(baseUrl, remotes)
 	if len(validRemotes) > 0 {
 		for {
 			fmt.Println("\nDetected projects:")
@@ -277,7 +354,7 @@ func promptURL(repo repository.RepoCommon) (string, error) {
 	}
 }
 
-func getProjectPath(projectUrl string) (string, error) {
+func getProjectPath(baseUrl, projectUrl string) (string, error) {
 	cleanUrl := strings.TrimSuffix(projectUrl, ".git")
 	cleanUrl = strings.Replace(cleanUrl, "git@", "https://", 1)
 	objectUrl, err := url.Parse(cleanUrl)
@@ -285,34 +362,45 @@ func getProjectPath(projectUrl string) (string, error) {
 		return "", ErrBadProjectURL
 	}
 
+	objectBaseUrl, err := url.Parse(baseUrl)
+	if err != nil {
+		return "", ErrBadProjectURL
+	}
+
+	if objectUrl.Hostname() != objectBaseUrl.Hostname() {
+		return "", fmt.Errorf("base url and project url hostnames doesn't match")
+	}
 	return objectUrl.Path[1:], nil
 }
 
-func getValidGitlabRemoteURLs(remotes map[string]string) []string {
+func getValidGitlabRemoteURLs(baseUrl string, remotes map[string]string) []string {
 	urls := make([]string, 0, len(remotes))
 	for _, u := range remotes {
-		path, err := getProjectPath(u)
+		projectPath, err := getProjectPath(baseUrl, u)
 		if err != nil {
 			continue
 		}
 
-		urls = append(urls, fmt.Sprintf("%s%s", "gitlab.com", path))
+		urls = append(urls, fmt.Sprintf("%s/%s", strings.TrimRight(baseUrl, "/"), projectPath))
 	}
 
 	return urls
 }
 
-func validateProjectURL(url string, token *auth.Token) (int, error) {
-	projectPath, err := getProjectPath(url)
+func validateProjectURL(baseUrl, url string, token *auth.Token) (int, error) {
+	projectPath, err := getProjectPath(baseUrl, url)
 	if err != nil {
 		return 0, err
 	}
 
-	client := buildClient(token)
+	client, err := buildClient(baseUrl, token)
+	if err != nil {
+		return 0, err
+	}
 
 	project, _, err := client.Projects.GetProject(projectPath, &gitlab.GetProjectOptions{})
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrap(err, "wrong token scope ou inexistent project")
 	}
 
 	return project.ID, nil
