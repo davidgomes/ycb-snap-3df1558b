@@ -102,6 +102,12 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 		return receipts
 	}
 
+	if len(receipts) != len(transactions) {
+		log.Warn("Receipt Correction: Receipt and transaction count mismatch",
+			"blockNumber", blockNumber, "receipts", len(receipts), "transactions", len(transactions))
+		return receipts
+	}
+
 	signer := types.LatestSignerForChainID(big.NewInt(int64(chainID)))
 	// iterate through the receipts and transactions to correct the deposit nonce
 	// user deposits should always be at the front of the block, but we will check all transactions to be sure
@@ -129,7 +135,10 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 			nonce := blockNonces[udCount]
 			udCount++
 			log.Trace("Receipt Correction: User Deposit detected", "address", from, "nonce", nonce)
-			if nonce != *r.DepositNonce {
+			if r.DepositNonce == nil {
+				log.Warn("Receipt Correction: Added missing deposit nonce", "corrected", nonce)
+				r.DepositNonce = &nonce
+			} else if nonce != *r.DepositNonce {
 				// correct the deposit nonce
 				// warn because this should not happen unless the data was modified by corruption or a malicious peer
 				// by correcting the nonce, the entire block is still valid for use
@@ -147,26 +156,63 @@ func correctReceipts(receipts types.Receipts, transactions types.Transactions, b
 	return receipts
 }
 
-// correctReceiptsRLP corrects the deposit nonce in the receipts using the reference data
-// This function works with RLP encoded receipts, decoding them to Receipt structs,
-// applying corrections, and re-encoding them back to RLP.
+// correctReceiptsRLP corrects the deposit nonce in the receipts using the reference data.
+// The receipts are expected in the database storage encoding (a list of
+// types.ReceiptForStorage), which is what the downloader receives from the eth protocol
+// handler and passes on to InsertReceiptChain. The storage encoding carries neither the
+// bloom nor the transaction type, so the type is taken from the matching transaction.
+// The input is returned unchanged if no correction was applied.
 func correctReceiptsRLP(receiptsRLP rlp.RawValue, transactions types.Transactions, blockNumber uint64, chainID uint64) rlp.RawValue {
-	// Decode RLP receipts to Receipt structs
-	var receipts types.Receipts
-	if err := rlp.DecodeBytes(receiptsRLP, &receipts); err != nil {
-		log.Warn("Receipt Correction: Failed to decode RLP receipts", "err", err)
+	initReceiptReferences(chainID)
+	depositNoncesForChain, ok := userDepositNoncesReference[chainID]
+	if !ok || blockNumber < depositNoncesForChain.First || blockNumber > depositNoncesForChain.Last {
+		return receiptsRLP
+	}
+	if _, ok := depositNoncesForChain.Results[blockNumber]; !ok {
 		return receiptsRLP
 	}
 
-	// Apply corrections using existing correctReceipts function
-	correctedReceipts := correctReceipts(receipts, transactions, blockNumber, chainID)
+	var storageReceipts []*types.ReceiptForStorage
+	if err := rlp.DecodeBytes(receiptsRLP, &storageReceipts); err != nil {
+		log.Warn("Receipt Correction: Failed to decode RLP receipts", "blockNumber", blockNumber, "err", err)
+		return receiptsRLP
+	}
+	if len(storageReceipts) != len(transactions) {
+		log.Warn("Receipt Correction: Receipt and transaction count mismatch",
+			"blockNumber", blockNumber, "receipts", len(storageReceipts), "transactions", len(transactions))
+		return receiptsRLP
+	}
 
-	// Re-encode to RLP
-	encoded, err := rlp.EncodeToBytes(correctedReceipts)
+	receipts := make(types.Receipts, len(storageReceipts))
+	originalNonces := make([]*uint64, len(storageReceipts))
+	for i, sr := range storageReceipts {
+		r := (*types.Receipt)(sr)
+		r.Type = transactions[i].Type()
+		receipts[i] = r
+		originalNonces[i] = r.DepositNonce
+	}
+
+	receipts = correctReceipts(receipts, transactions, blockNumber, chainID)
+
+	modified := false
+	for i, r := range receipts {
+		orig := originalNonces[i]
+		if (orig == nil) != (r.DepositNonce == nil) || (orig != nil && *orig != *r.DepositNonce) {
+			modified = true
+			break
+		}
+	}
+	if !modified {
+		return receiptsRLP
+	}
+
+	for i, r := range receipts {
+		storageReceipts[i] = (*types.ReceiptForStorage)(r)
+	}
+	encoded, err := rlp.EncodeToBytes(storageReceipts)
 	if err != nil {
-		log.Warn("Receipt Correction: Failed to encode corrected receipts to RLP", "err", err)
+		log.Warn("Receipt Correction: Failed to encode corrected receipts to RLP", "blockNumber", blockNumber, "err", err)
 		return receiptsRLP
 	}
-
 	return encoded
 }
