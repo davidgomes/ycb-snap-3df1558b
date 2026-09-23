@@ -60,6 +60,9 @@ type PayloadAttributes struct {
 	// and contains encoded EIP-1559 parameters. See:
 	// https://github.com/ethereum-optimism/specs/blob/main/specs/protocol/holocene/exec-engine.md#eip1559params-encoding
 	EIP1559Params []byte `json:"eip1559Params,omitempty" gencodec:"optional"`
+	// MinBaseFee is a field for rollups implementing the Jovian upgrade: the minimum base fee
+	// to enforce for blocks built on top of this one.
+	MinBaseFee *uint64 `json:"minBaseFee,omitempty" gencodec:"optional"`
 }
 
 // JSON type overrides for PayloadAttributes.
@@ -69,6 +72,7 @@ type payloadAttributesMarshaling struct {
 	Transactions  []hexutil.Bytes
 	GasLimit      *hexutil.Uint64
 	EIP1559Params hexutil.Bytes
+	MinBaseFee    *hexutil.Uint64
 }
 
 //go:generate go run github.com/fjl/gencodec -type ExecutableData -field-override executableDataMarshaling -out gen_ed.go
