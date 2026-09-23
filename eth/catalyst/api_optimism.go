@@ -18,13 +18,10 @@ func checkOptimismPayload(params engine.ExecutableData, cfg *params.ChainConfig)
 		}
 	}
 
-	// Holocene - extraData
-	if cfg.IsHolocene(params.Timestamp) {
-		if err := eip1559.ValidateHoloceneExtraData(params.ExtraData); err != nil {
-			return err
-		}
-	} else if len(params.ExtraData) > 0 { // pre-Holocene
-		return errors.New("extraData must be empty before Holocene")
+	// Holocene/Jovian - extraData. Jovian requires the 17-byte encoding
+	// (version + EIP-1559 params + minimum base fee) and rejects Holocene's 9-byte form.
+	if err := eip1559.ValidateOptimismExtraData(cfg, params.Timestamp, params.ExtraData); err != nil {
+		return err
 	}
 
 	// Isthmus - withdrawalsRoot
