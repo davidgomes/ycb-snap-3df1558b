@@ -1799,7 +1799,7 @@ def normalize_service_final(service: dict[str, Any], project_dir: str) -> dict[s
         build = service["build"]
         context = build if isinstance(build, str) else build.get("context", ".")
 
-        if not is_path_git_url(context):
+        if not is_context_git_url(context):
             context = os.path.normpath(os.path.join(project_dir, context))
         if not isinstance(service["build"], dict):
             service["build"] = {}
@@ -2788,9 +2788,33 @@ async def compose_push(compose: PodmanCompose, args: argparse.Namespace) -> None
         await compose.podman.run([], "push", [cnt["image"]])
 
 
-def is_path_git_url(path: str) -> bool:
+def is_context_git_url(path: str) -> bool:
+    """
+    Return True when a build context is a git URL rather than a local directory.
+
+    A local directory whose name ends in ``.git`` is not a git URL. Remote
+    contexts are recognized from an explicit scheme (``git``, ``http``,
+    ``https``, ``ssh``, ``file``, ``rsync``), from scp-like ``host:path``
+    forms, or from a ``user@host`` prefix.
+    """
     r = urllib.parse.urlparse(path)
-    return r.scheme == 'git' or r.path.endswith('.git')
+    if r.scheme in ('git', 'http', 'https', 'ssh', 'file', 'rsync'):
+        return True
+    # urllib puts the text before ":" into scheme and leaves netloc empty for
+    # scp-like URLs such as ``github.com:org/repo.git`` or ``host:path/to/repo``.
+    if r.scheme != "" and r.netloc == "" and r.path != "":
+        return True
+    if r.scheme == "":
+        # ``user@host:path`` has no scheme; prefix ssh:// so the username is parsed.
+        r = urllib.parse.urlparse("ssh://" + path)
+        if r.username is not None and r.username != "":
+            return True
+    return False
+
+
+def is_path_git_url(path: str) -> bool:
+    """Backward-compatible name for :func:`is_context_git_url`."""
+    return is_context_git_url(path)
 
 
 def adjust_build_ssh_key_paths(compose: PodmanCompose, agent_or_key: str) -> str:
@@ -2835,7 +2859,8 @@ def container_to_build_args(
 
     build_args = []
 
-    if not is_path_git_url(ctx):
+    # Join a local context with the dockerfile. Git URLs are passed through as-is.
+    if not is_context_git_url(ctx):
         custom_dockerfile_given = False
         if dockerfile:
             dockerfile = os.path.join(ctx, dockerfile)
