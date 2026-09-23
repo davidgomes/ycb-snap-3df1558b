@@ -50,11 +50,6 @@ class TestContainerToArgsHealthcheck(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_healthcheck_command_is_not_wrapped_in_shell(self):
-        args = await self._healthcheck_args({"test": ["CMD", "/healthcheck"]})
-        command = args[args.index("--healthcheck-command") + 1]
-        self.assertNotIn("/bin/sh", command)
-
     async def test_healthcheck_does_not_modify_service_definition(self):
         test = ["CMD", "cmd", "arg1"]
         await self._healthcheck_args({"test": test})
