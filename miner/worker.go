@@ -74,6 +74,9 @@ type environment struct {
 	coinbase common.Address
 	evm      *vm.EVM
 
+	// OP-Stack addition: Jovian DA footprint of the non-deposit transactions
+	daFootprint uint64
+
 	header   *types.Header
 	txs      []*types.Transaction
 	receipts []*types.Receipt
@@ -196,6 +199,11 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 		} else if errors.Is(err, errBlockInterruptedByResolve) {
 			log.Info("Block building got interrupted by payload resolution")
 		}
+	}
+
+	// OP-Stack addition: Jovian sets the block gas used to the max of tx gas and DA footprint
+	if miner.chainConfig.IsDAFootprintBlockLimit(work.header.Time) && work.daFootprint > work.header.GasUsed {
+		work.header.GasUsed = work.daFootprint
 	}
 
 	body := types.Body{Transactions: work.txs, Withdrawals: genParam.withdrawals}
@@ -438,6 +446,11 @@ func (miner *Miner) commitTransaction(env *environment, tx *types.Transaction) e
 	return nil
 }
 
+// txDAFootprint returns the Jovian DA footprint of a transaction with the given estimated DA size.
+func txDAFootprint(daSize *big.Int) uint64 {
+	return daSize.Uint64() * params.DAFootprintGasScalar
+}
+
 func (miner *Miner) commitBlobTransaction(env *environment, tx *types.Transaction) error {
 	sc := tx.BlobTxSidecar()
 	if sc == nil {
@@ -476,8 +489,12 @@ func (miner *Miner) applyTransaction(env *environment, tx *types.Transaction) (*
 	if err != nil {
 		env.state.RevertToSnapshot(snap)
 		env.gasPool.SetGas(gp)
+		return nil, err
 	}
-	return receipt, err
+	if miner.chainConfig.IsDAFootprintBlockLimit(env.header.Time) && !tx.IsDepositTx() {
+		env.daFootprint += txDAFootprint(tx.RollupCostData().EstimatedDASize())
+	}
+	return receipt, nil
 }
 
 func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *transactionsByPriceAndNonce, interrupt *atomic.Int32) error {
@@ -488,7 +505,10 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 	if env.gasPool == nil {
 		env.gasPool = new(core.GasPool).AddGas(gasLimit)
 	}
+	// OP-Stack additions: throttling and DA footprint limit
 	blockDABytes := new(big.Int)
+	isJovian := miner.chainConfig.IsDAFootprintBlockLimit(env.header.Time)
+	minTxDAFootprint := txDAFootprint(types.MinTransactionSize)
 	for {
 		// Check interruption signal and abort building if it's fired.
 		if interrupt != nil {
@@ -500,6 +520,17 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 		if env.gasPool.Gas() < params.TxGas {
 			log.Trace("Not enough gas for further transactions", "have", env.gasPool, "want", params.TxGas)
 			break
+		}
+		var daFootprintLeft uint64
+		if isJovian {
+			if env.daFootprint < gasLimit {
+				daFootprintLeft = gasLimit - env.daFootprint
+			}
+			// If we don't have enough DA space for any further transactions then we're done.
+			if daFootprintLeft < minTxDAFootprint {
+				log.Debug("Not enough DA space for further transactions", "have", daFootprintLeft, "want", minTxDAFootprint)
+				break
+			}
 		}
 		// If we don't have enough blob space for any further blob transactions,
 		// skip that list altogether
@@ -545,6 +576,26 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 			left := eip4844.MaxBlobsPerBlock(miner.chainConfig, env.header.Time) - env.blobs
 			if left < int(ltx.BlobGas/params.BlobTxBlobGasPerBlob) {
 				log.Trace("Not enough blob space left for transaction", "hash", ltx.Hash, "left", left, "needed", ltx.BlobGas/params.BlobTxBlobGasPerBlob)
+				txs.Pop()
+				continue
+			}
+		}
+
+		// OP-Stack addition: Jovian DA footprint limit. Deposits are all force-included
+		// before this loop, so pool transactions never need to be excluded here.
+		if isJovian {
+			daBytes := ltx.DABytes
+			if daBytes == nil {
+				tx := ltx.Resolve()
+				if tx == nil {
+					log.Trace("Ignoring evicted transaction", "hash", ltx.Hash)
+					txs.Pop()
+					continue
+				}
+				daBytes = tx.RollupCostData().EstimatedDASize()
+			}
+			if needed := txDAFootprint(daBytes); daFootprintLeft < needed {
+				log.Debug("Not enough DA space left for transaction", "hash", ltx.Hash, "left", daFootprintLeft, "needed", needed)
 				txs.Pop()
 				continue
 			}

@@ -89,6 +89,12 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		ProcessParentBlockHash(block.ParentHash(), evm)
 	}
 
+	// OP-Stack addition: Jovian DA footprint block limit
+	var (
+		daFootprint uint64
+		isJovian    = p.config.IsDAFootprintBlockLimit(block.Time())
+	)
+
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
@@ -103,6 +109,15 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+
+		if isJovian && !tx.IsDepositTx() {
+			daFootprint += tx.RollupCostData().EstimatedDASize().Uint64() * params.DAFootprintGasScalar
+		}
+	}
+
+	// OP-Stack addition: Jovian sets the block gas used to the max of tx gas and DA footprint
+	if isJovian && daFootprint > *usedGas {
+		*usedGas = daFootprint
 	}
 
 	isIsthmus := p.config.IsIsthmus(block.Time())
