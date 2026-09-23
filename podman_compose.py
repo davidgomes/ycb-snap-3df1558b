@@ -421,6 +421,10 @@ async def assert_volume(compose: PodmanCompose, mount_dict: dict[str, Any]) -> N
                 os.makedirs(mount_src, exist_ok=True)
             except OSError:
                 pass
+        # Long-form bind sources stay relative to the compose file until here.
+        # os.chdir() to the project dir was removed, so Podman would otherwise
+        # resolve them against the process cwd and mount the wrong host directory.
+        mount_dict["source"] = mount_src
         return
     if mount_dict["type"] != "volume" or not vol or not vol.get("name"):
         return
