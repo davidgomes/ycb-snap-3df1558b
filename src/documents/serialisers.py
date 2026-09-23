@@ -513,6 +513,59 @@ class CustomFieldSerializer(serializers.ModelSerializer):
             "document_count",
         ]
 
+    def __init__(self, *args, **kwargs):
+        context = kwargs.get("context")
+        request = context.get("request") if context else None
+        # Requests without an explicit version get the current format
+        self.api_version = int(
+            request.version
+            if request
+            and request.version
+            and "version=" in request.META.get("HTTP_ACCEPT", "")
+            else settings.REST_FRAMEWORK["ALLOWED_VERSIONS"][-1],
+        )
+        super().__init__(*args, **kwargs)
+
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+        if (
+            self.api_version < 7
+            and isinstance(ret.get("extra_data"), dict)
+            and isinstance(ret["extra_data"].get("select_options"), list)
+        ):
+            ret["extra_data"]["select_options"] = [
+                {"label": option, "id": None} if isinstance(option, str) else option
+                for option in ret["extra_data"]["select_options"]
+            ]
+            if self.instance is not None and isinstance(
+                self.instance.extra_data,
+                dict,
+            ):
+                existing = self.instance.extra_data.get("select_options") or []
+                for i, option in enumerate(ret["extra_data"]["select_options"]):
+                    if (
+                        option.get("id") is None
+                        and i < len(existing)
+                        and isinstance(existing[i], dict)
+                        and existing[i].get("label") == option.get("label")
+                    ):
+                        option["id"] = existing[i].get("id")
+        return ret
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if (
+            self.api_version < 7
+            and instance.data_type == CustomField.FieldDataType.SELECT
+            and isinstance(ret.get("extra_data"), dict)
+        ):
+            ret["extra_data"] = dict(ret["extra_data"])
+            ret["extra_data"]["select_options"] = [
+                option["label"] if isinstance(option, dict) else option
+                for option in ret["extra_data"].get("select_options") or []
+            ]
+        return ret
+
     def validate(self, attrs):
         # TODO: remove pending https://github.com/encode/django-rest-framework/issues/7173
         name = attrs.get(
