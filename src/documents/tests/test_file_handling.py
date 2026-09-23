@@ -1,9 +1,11 @@
 import datetime
 import logging
 import tempfile
+import zoneinfo
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from auditlog.context import disable_auditlog
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -22,6 +24,9 @@ from documents.models import Document
 from documents.models import DocumentType
 from documents.models import StoragePath
 from documents.tasks import empty_trash
+from documents.templating.filepath import validate_filepath_template_and_render
+from documents.templating.filters import localize_date
+from documents.tests.factories import DocumentFactory
 from documents.tests.utils import DirectoriesMixin
 from documents.tests.utils import FileSystemAssertsMixin
 
@@ -1586,3 +1591,339 @@ class TestFilenameGeneration(DirectoriesMixin, TestCase):
                 generate_filename(doc),
                 Path("brussels-belgium/some-title-with-special-characters.pdf"),
             )
+
+
+class TestDateLocalization:
+    TEST_DATE = datetime.date(2023, 10, 26)
+
+    TEST_DATETIME = datetime.datetime(
+        2023,
+        10,
+        26,
+        14,
+        30,
+        5,
+        tzinfo=datetime.timezone.utc,
+    )
+
+    @pytest.mark.parametrize(
+        ("value", "format_style", "locale_str", "expected_output"),
+        [
+            pytest.param(
+                TEST_DATE,
+                "EEEE, MMM d, yyyy",
+                "en_US",
+                "Thursday, Oct 26, 2023",
+                id="date-en_US-custom",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "MMMM d, yyyy",
+                "en_US",
+                "October 26, 2023",
+                id="date-en_US-long-month",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "dd.MM.yyyy",
+                "de_DE",
+                "26.10.2023",
+                id="date-de_DE-custom",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "EEEE, d. MMMM yyyy",
+                "de_DE",
+                "Donnerstag, 26. Oktober 2023",
+                id="date-de_DE-names",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "EEEE",
+                "de_DE",
+                "Donnerstag",
+                id="weekday-de_DE",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "MMMM",
+                "de_DE",
+                "Oktober",
+                id="month-de_DE",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "EEEE",
+                "fr_FR",
+                "jeudi",
+                id="weekday-fr_FR",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "MMMM",
+                "fr_FR",
+                "octobre",
+                id="month-fr_FR",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "MMMM",
+                "es_ES",
+                "octubre",
+                id="month-es_ES",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "EEEE d MMMM yyyy",
+                "it_IT",
+                "giovedì 26 ottobre 2023",
+                id="date-it_IT-names",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "long",
+                "en_US",
+                "October 26, 2023",
+                id="date-en_US-preset-long",
+            ),
+            pytest.param(
+                TEST_DATE,
+                "full",
+                "de_DE",
+                "Donnerstag, 26. Oktober 2023",
+                id="date-de_DE-preset-full",
+            ),
+        ],
+    )
+    def test_localize_date(
+        self,
+        value: datetime.date,
+        format_style: str,
+        locale_str: str,
+        expected_output: str,
+    ):
+        """
+        GIVEN:
+            - A date, a format and a locale
+        WHEN:
+            - The date is localized
+        THEN:
+            - The date is formatted using the locale's conventions and language
+        """
+        assert localize_date(value, format_style, locale_str) == expected_output
+
+    @pytest.mark.parametrize(
+        ("value", "format_style", "locale_str", "expected_output"),
+        [
+            pytest.param(
+                TEST_DATETIME,
+                "yyyy-MM-dd'T'HH:mm:ssZZZZZ",
+                "en_US",
+                "2023-10-26T14:30:05Z",
+                id="datetime-en_US-iso",
+            ),
+            pytest.param(
+                TEST_DATETIME,
+                "dd.MM.yyyy",
+                "de_DE",
+                "26.10.2023",
+                id="datetime-de_DE-date-only",
+            ),
+            pytest.param(
+                TEST_DATETIME,
+                "EEEE, d. MMMM yyyy HH:mm:ss zzzz",
+                "de_DE",
+                "Donnerstag, 26. Oktober 2023 14:30:05 Koordinierte Weltzeit",
+                id="datetime-de_DE-timezone-name",
+            ),
+            pytest.param(
+                TEST_DATETIME,
+                "full",
+                "fr_FR",
+                "jeudi 26 octobre 2023, 14:30:05 temps universel coordonné",
+                id="datetime-fr_FR-preset-full",
+            ),
+            pytest.param(
+                TEST_DATETIME.astimezone(zoneinfo.ZoneInfo("Europe/Berlin")),
+                "yyyy-MM-dd HH:mm xxx",
+                "de_DE",
+                "2023-10-26 16:30 +02:00",
+                id="datetime-keeps-own-timezone",
+            ),
+            pytest.param(
+                datetime.datetime(2023, 10, 26, 14, 30, 5),
+                "HH:mm zzz",
+                "en_GB",
+                "14:30 UTC",
+                id="datetime-naive-as-utc",
+            ),
+        ],
+    )
+    def test_localize_datetime(
+        self,
+        value: datetime.datetime,
+        format_style: str,
+        locale_str: str,
+        expected_output: str,
+    ):
+        """
+        GIVEN:
+            - A datetime, a format and a locale
+        WHEN:
+            - The datetime is localized
+        THEN:
+            - The datetime is formatted using the locale's conventions and language,
+              including time and time zone fields
+        """
+        assert localize_date(value, format_style, locale_str) == expected_output
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("2023-10-26", id="str"),
+            pytest.param(None, id="none"),
+            pytest.param(20231026, id="int"),
+        ],
+    )
+    def test_localize_date_raises_error_for_invalid_type(self, value):
+        """
+        GIVEN:
+            - A value which is neither a date nor a datetime
+        WHEN:
+            - The value is localized
+        THEN:
+            - A TypeError naming the unsupported type is raised
+        """
+        with pytest.raises(
+            TypeError,
+            match=f"Unsupported type {type(value)} for localize_date",
+        ):
+            localize_date(value, "medium", "en_US")
+
+    @pytest.mark.parametrize(
+        "locale_str",
+        [
+            pytest.param("invalid_locale_code", id="malformed"),
+            pytest.param("xx_YY", id="unknown"),
+            pytest.param("", id="empty"),
+            pytest.param(None, id="none"),
+        ],
+    )
+    def test_localize_date_raises_error_for_invalid_locale(self, locale_str):
+        """
+        GIVEN:
+            - An invalid or unknown locale identifier
+        WHEN:
+            - A date is localized
+        THEN:
+            - A ValueError about the locale identifier is raised
+        """
+        with pytest.raises(ValueError, match="Invalid locale identifier"):
+            localize_date(self.TEST_DATE, "medium", locale_str)
+
+    @pytest.mark.django_db
+    @pytest.mark.parametrize(
+        ("filename_format", "expected_filename"),
+        [
+            pytest.param(
+                "{{title}}_{{ document.created | localize_date('MMMM', 'es_ES')}}",
+                "My Document_octubre.pdf",
+                id="spanish_month_name",
+            ),
+            pytest.param(
+                "{{title}}_{{ document.created | localize_date('EEEE', 'fr_FR')}}",
+                "My Document_jeudi.pdf",
+                id="french_day_of_week",
+            ),
+            pytest.param(
+                "{{ document.created | localize_date('EEEE, d. MMMM yyyy', 'de_DE') }}/{{title}}",
+                "Donnerstag, 26. Oktober 2023/My Document.pdf",
+                id="german_directory",
+            ),
+            pytest.param(
+                "{{title}}_{{ document.created | localize_date('dd/MM/yyyy', 'en_GB')}}",
+                "My Document_26/10/2023.pdf",
+                id="uk_date_format",
+            ),
+            pytest.param(
+                "{{title}}_{{ document.added | localize_date('yyyy-MM-dd HH.mm zzz', 'en_GB')}}",
+                "My Document_2023-10-26 14.30 UTC.pdf",
+                id="added_datetime",
+            ),
+        ],
+    )
+    def test_localize_date_path_building(
+        self,
+        filename_format: str,
+        expected_filename: str,
+    ):
+        """
+        GIVEN:
+            - A filename format using the localize_date filter
+        WHEN:
+            - The filename for a document is generated
+        THEN:
+            - The localized date is part of the filename
+        """
+        document = DocumentFactory.create(
+            title="My Document",
+            mime_type="application/pdf",
+            storage_type=Document.STORAGE_TYPE_UNENCRYPTED,
+            created=self.TEST_DATE,
+            added=self.TEST_DATETIME,
+        )
+
+        with override_settings(FILENAME_FORMAT=filename_format):
+            assert generate_filename(document) == Path(expected_filename)
+
+    @pytest.mark.django_db
+    def test_localize_date_invalid_locale_falls_back_to_default_filename(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """
+        GIVEN:
+            - A filename format using the localize_date filter with an invalid locale
+        WHEN:
+            - The filename for a document is generated
+        THEN:
+            - The error is logged and the default filename is used
+        """
+        document = DocumentFactory.create(
+            title="My Document",
+            mime_type="application/pdf",
+            storage_type=Document.STORAGE_TYPE_UNENCRYPTED,
+            created=self.TEST_DATE,
+        )
+
+        with (
+            override_settings(
+                FILENAME_FORMAT="{{ document.created | localize_date('MMMM', 'xx_YY') }}/{{ title }}",
+            ),
+            caplog.at_level(logging.WARNING, logger="paperless.templating"),
+        ):
+            assert generate_filename(document) == Path(f"{document.pk:07d}.pdf")
+
+        assert "Invalid locale identifier: xx_YY" in caplog.text
+
+    def test_localize_date_template_validation(self):
+        """
+        GIVEN:
+            - A storage path template using the localize_date filter
+        WHEN:
+            - The template is validated against the dummy document
+        THEN:
+            - The template renders successfully, unless the locale is invalid
+        """
+        assert (
+            validate_filepath_template_and_render(
+                "{{ document.created | localize_date('yyyy', 'de_DE') }}/{{ title }}",
+            )
+            is not None
+        )
+        assert (
+            validate_filepath_template_and_render(
+                "{{ document.created | localize_date('yyyy', 'not a locale') }}",
+            )
+            is None
+        )
