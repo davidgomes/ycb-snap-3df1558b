@@ -217,8 +217,9 @@ func TestPushPull(t *testing.T) {
 
 	importer := &githubImporter{}
 	err = importer.Init(ctx, backend, core.Configuration{
-		confKeyOwner:   envUser,
-		confKeyProject: projectName,
+		confKeyOwner:        envUser,
+		confKeyProject:      projectName,
+		confKeyDefaultLogin: login,
 	})
 	require.NoError(t, err)
 

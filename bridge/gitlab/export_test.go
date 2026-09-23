@@ -225,6 +225,7 @@ func TestPushPull(t *testing.T) {
 	err = importer.Init(ctx, backend, core.Configuration{
 		confKeyProjectID:     strconv.Itoa(projectID),
 		confKeyGitlabBaseUrl: defaultBaseURL,
+		confKeyDefaultLogin:  login,
 	})
 	require.NoError(t, err)
 

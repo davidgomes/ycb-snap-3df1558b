@@ -26,6 +26,7 @@ const (
 	confKeyBaseUrl        = "base-url"
 	confKeyProject        = "project"
 	confKeyCredentialType = "credentials-type" // "SESSION" or "TOKEN"
+	confKeyDefaultLogin   = "default-login"
 	confKeyIDMap          = "bug-id-map"
 	confKeyIDRevMap       = "bug-id-revmap"
 	// the issue type when exporting a new bug. Default is Story (10001)
