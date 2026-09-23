@@ -19,4 +19,10 @@ class PaperlessConfig(AppConfig):
 
         social_account_updated.connect(handle_social_account_updated)
 
+        from django.core.signals import setting_changed
+
+        from paperless.db_cache import handle_cachalot_setting_changed
+
+        setting_changed.connect(handle_cachalot_setting_changed)
+
         AppConfig.ready(self)
