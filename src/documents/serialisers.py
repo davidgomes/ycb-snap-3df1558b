@@ -1189,7 +1189,6 @@ class SavedViewSerializer(OwnedObjectSerializer):
             "owner",
             "permissions",
             "user_can_change",
-            "set_permissions",
         ]
 
     def validate(self, attrs):
@@ -1754,6 +1753,8 @@ class StoragePathSerializer(MatchingModelSerializer, OwnedObjectSerializer):
 
 
 class UiSettingsViewSerializer(serializers.ModelSerializer):
+    settings = serializers.DictField(required=False, allow_null=True)
+
     class Meta:
         model = UiSettings
         depth = 1
@@ -1763,6 +1764,8 @@ class UiSettingsViewSerializer(serializers.ModelSerializer):
         ]
 
     def validate_settings(self, settings):
+        if not isinstance(settings, dict):
+            raise serializers.ValidationError("Expected a dictionary")
         # we never save update checking backend setting
         if "update_checking" in settings:
             try:
@@ -2020,8 +2023,9 @@ class WorkflowTriggerSerializer(serializers.ModelSerializer):
         ):
             attrs["filter_path"] = None
 
+        trigger_type = attrs.get("type", getattr(self.instance, "type", None))
         if (
-            attrs["type"] == WorkflowTrigger.WorkflowTriggerType.CONSUMPTION
+            trigger_type == WorkflowTrigger.WorkflowTriggerType.CONSUMPTION
             and "filter_mailrule" not in attrs
             and ("filter_filename" not in attrs or attrs["filter_filename"] is None)
             and ("filter_path" not in attrs or attrs["filter_path"] is None)

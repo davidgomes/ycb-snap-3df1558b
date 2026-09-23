@@ -191,11 +191,10 @@ class IndexView(TemplateView):
     template_name = "index.html"
 
     def get_frontend_language(self):
-        if hasattr(
-            self.request.user,
-            "ui_settings",
-        ) and self.request.user.ui_settings.settings.get("language"):
-            lang = self.request.user.ui_settings.settings.get("language")
+        ui_settings = getattr(self.request.user, "ui_settings", None)
+        stored_settings = getattr(ui_settings, "settings", None)
+        if isinstance(stored_settings, dict) and stored_settings.get("language"):
+            lang = stored_settings.get("language")
         else:
             lang = get_language()
         # This is here for the following reason:
@@ -2150,7 +2149,7 @@ class UiSettingsView(GenericAPIView):
 
         user = User.objects.select_related("ui_settings").get(pk=request.user.id)
         ui_settings = {}
-        if hasattr(user, "ui_settings"):
+        if hasattr(user, "ui_settings") and isinstance(user.ui_settings.settings, dict):
             ui_settings = user.ui_settings.settings
         if "update_checking" in ui_settings:
             ui_settings["update_checking"]["backend_setting"] = (
