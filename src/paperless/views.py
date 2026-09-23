@@ -25,6 +25,7 @@ from drf_spectacular.utils import extend_schema_view
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.decorators import action
+from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.filters import OrderingFilter
 from rest_framework.generics import GenericAPIView
 from rest_framework.pagination import PageNumberPagination
@@ -341,6 +342,10 @@ class ApplicationConfigurationViewSet(ModelViewSet):
 
     serializer_class = ApplicationConfigurationSerializer
     permission_classes = (IsAuthenticated, DjangoModelPermissions)
+
+    @extend_schema(exclude=True)
+    def create(self, request, *args, **kwargs):
+        raise MethodNotAllowed(request.method)
 
 
 @extend_schema_view(
