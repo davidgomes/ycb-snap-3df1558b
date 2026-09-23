@@ -37,12 +37,17 @@ func (ji *jiraImporter) Init(ctx context.Context, repo *cache.RepoCache, conf co
 
 	var cred auth.Credential
 
-	// Prioritize LoginPassword credentials to avoid a prompt
-	creds, err := auth.List(repo,
+	opts := []auth.Option{
 		auth.WithTarget(target),
 		auth.WithMeta(auth.MetaKeyBaseURL, conf[confKeyBaseUrl]),
-		auth.WithKind(auth.KindLoginPassword),
-	)
+	}
+	// bridges configured before the default login was recorded don't have it
+	if login, ok := conf[confKeyDefaultLogin]; ok {
+		opts = append(opts, auth.WithMeta(auth.MetaKeyLogin, login))
+	}
+
+	// Prioritize LoginPassword credentials to avoid a prompt
+	creds, err := auth.List(repo, append(opts, auth.WithKind(auth.KindLoginPassword))...)
 	if err != nil {
 		return err
 	}
@@ -51,11 +56,7 @@ func (ji *jiraImporter) Init(ctx context.Context, repo *cache.RepoCache, conf co
 		goto end
 	}
 
-	creds, err = auth.List(repo,
-		auth.WithTarget(target),
-		auth.WithMeta(auth.MetaKeyBaseURL, conf[confKeyBaseUrl]),
-		auth.WithKind(auth.KindLogin),
-	)
+	creds, err = auth.List(repo, append(opts, auth.WithKind(auth.KindLogin))...)
 	if err != nil {
 		return err
 	}
