@@ -1282,6 +1282,31 @@ within your documents.
 
     Defaults to false.
 
+## Workflow webhooks
+
+#### [`PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES=<comma-separated-list>`](#PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES) {#PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES}
+
+: A comma-separated list of allowed schemes for webhooks. This setting
+controls which URL schemes are permitted for webhook URLs.
+
+    Defaults to `http,https`.
+
+#### [`PAPERLESS_WEBHOOKS_ALLOWED_PORTS=<comma-separated-list>`](#PAPERLESS_WEBHOOKS_ALLOWED_PORTS) {#PAPERLESS_WEBHOOKS_ALLOWED_PORTS}
+
+: A comma-separated list of allowed ports for webhooks. This setting
+controls which ports are permitted for webhook URLs. For example, if you
+set this to `80,443`, webhooks will only be sent to URLs that use these
+ports.
+
+    Defaults to an empty list, which allows all ports.
+
+#### [`PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS=<bool>`](#PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS) {#PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS}
+
+: If set to false, webhooks cannot be sent to internal URLs (private,
+loopback, or link-local addresses).
+
+    Defaults to false, which blocks internal requests.
+
 ### Polling {#polling}
 
 #### [`PAPERLESS_CONSUMER_POLLING=<num>`](#PAPERLESS_CONSUMER_POLLING) {#PAPERLESS_CONSUMER_POLLING}
