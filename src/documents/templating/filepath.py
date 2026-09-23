@@ -2,10 +2,15 @@ import logging
 import os
 import re
 from collections.abc import Iterable
+from datetime import date
 from datetime import datetime
 from pathlib import PurePath
 
 import pathvalidate
+from babel import Locale
+from babel import UnknownLocaleError
+from babel.dates import format_date
+from babel.dates import format_datetime as babel_format_datetime
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.text import slugify as django_slugify
@@ -102,6 +107,26 @@ def format_datetime(value: str | datetime, format: str) -> str:
 _template_environment.filters["datetime"] = format_datetime
 
 _template_environment.filters["slugify"] = django_slugify
+
+
+def localize_date(value: date | datetime, format: str, locale: str) -> str:
+    """
+    Formats a date or datetime using a Babel/CLDR pattern (e.g. "EEEE, MMM d, yyyy")
+    with month and weekday names translated for the given locale.
+    """
+    try:
+        Locale.parse(locale)
+    except (ValueError, TypeError, UnknownLocaleError) as e:
+        raise ValueError(f"Invalid locale identifier: {locale}") from e
+
+    if isinstance(value, datetime):
+        return babel_format_datetime(value, format=format, locale=locale)
+    elif isinstance(value, date):
+        return format_date(value, format=format, locale=locale)
+    raise TypeError(f"Unsupported type {type(value)} for localize_date")
+
+
+_template_environment.filters["localize_date"] = localize_date
 
 
 def create_dummy_document():
