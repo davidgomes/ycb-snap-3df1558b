@@ -6,6 +6,7 @@ from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from documents.models import UiSettings
 from documents.tests.utils import DirectoriesMixin
 
 
@@ -72,6 +73,74 @@ class TestApiUiSettings(DirectoriesMixin, APITestCase):
             ui_settings.settings,
             settings["settings"],
         )
+
+    def test_api_set_ui_settings_not_dict(self):
+        """
+        GIVEN:
+            - API request to set ui_settings where settings is not a dict
+        WHEN:
+            - API is called
+        THEN:
+            - HTTP 400 is returned
+            - Existing settings are unchanged and can still be retrieved
+        """
+        for value in ["random_string", 42, ["a", "b"], True]:
+            response = self.client.post(
+                self.ENDPOINT,
+                json.dumps({"settings": value}),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertIn("Expected a dictionary", str(response.data["settings"]))
+
+        self.assertFalse(UiSettings.objects.filter(user=self.test_user).exists())
+
+        response = self.client.get(self.ENDPOINT, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_api_set_ui_settings_invalid_update_checking(self):
+        """
+        GIVEN:
+            - API request to set ui_settings where update_checking is not a dict
+        WHEN:
+            - API is called and ui_settings are then retrieved
+        THEN:
+            - Both requests succeed
+        """
+        response = self.client.post(
+            self.ENDPOINT,
+            json.dumps({"settings": {"update_checking": "random_string"}}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(self.ENDPOINT, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertDictEqual(
+            response.data["settings"]["update_checking"],
+            {"backend_setting": "default"},
+        )
+
+    def test_api_get_ui_settings_stored_not_dict(self):
+        """
+        GIVEN:
+            - Existing ui_settings which are not a dict
+        WHEN:
+            - API is called to retrieve ui_settings
+        THEN:
+            - Default settings are returned
+        """
+        for value in [None, "random_string"]:
+            UiSettings.objects.update_or_create(
+                user=self.test_user,
+                defaults={"settings": value},
+            )
+            response = self.client.get(self.ENDPOINT, format="json")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertDictEqual(
+                response.data["settings"]["update_checking"],
+                {"backend_setting": "default"},
+            )
 
     def test_api_set_ui_settings_insufficient_global_permissions(self):
         not_superuser = User.objects.create_user(username="test_not_superuser")

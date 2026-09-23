@@ -341,6 +341,8 @@ class ApplicationConfigurationViewSet(ModelViewSet):
 
     serializer_class = ApplicationConfigurationSerializer
     permission_classes = (IsAuthenticated, DjangoModelPermissions)
+    # The configuration is a singleton, so creating another one is not allowed
+    http_method_names = ["get", "put", "patch", "delete", "head", "options"]
 
 
 @extend_schema_view(

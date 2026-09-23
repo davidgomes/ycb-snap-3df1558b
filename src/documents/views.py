@@ -2150,9 +2150,10 @@ class UiSettingsView(GenericAPIView):
 
         user = User.objects.select_related("ui_settings").get(pk=request.user.id)
         ui_settings = {}
-        if hasattr(user, "ui_settings"):
+        # settings saved before they were validated may not be a dict
+        if hasattr(user, "ui_settings") and isinstance(user.ui_settings.settings, dict):
             ui_settings = user.ui_settings.settings
-        if "update_checking" in ui_settings:
+        if isinstance(ui_settings.get("update_checking"), dict):
             ui_settings["update_checking"]["backend_setting"] = (
                 settings.ENABLE_UPDATE_CHECK
             )

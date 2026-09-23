@@ -518,6 +518,132 @@ class TestAPIMailRules(DirectoriesMixin, APITestCase):
             rule1["assign_owner_from_rule"],
         )
 
+    def test_create_mail_rule_only_required_fields(self):
+        """
+        GIVEN:
+            - Configured mail account exists
+        WHEN:
+            - API request is made to add a mail rule with only the required fields
+        THEN:
+            - A new mail rule is created with default values
+        """
+        account1 = MailAccount.objects.create(
+            name="Email1",
+            username="username1",
+            password="password1",
+            imap_server="server.example.com",
+        )
+
+        response = self.client.post(
+            self.ENDPOINT,
+            data={"name": "foo", "account": account1.pk},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        rule = MailRule.objects.get(pk=response.data["id"])
+        self.assertEqual(rule.name, "foo")
+        self.assertEqual(rule.account, account1)
+        self.assertEqual(rule.action, MailRule.MailAction.MARK_READ)
+        self.assertEqual(rule.assign_tags.count(), 0)
+
+    def test_create_mail_rule_action_parameter_required(self):
+        """
+        GIVEN:
+            - Configured mail account exists
+        WHEN:
+            - API request is made to add a mail rule with a MOVE or TAG action
+        THEN:
+            - HTTP 400 is returned if action_parameter is missing
+            - The mail rule is created if action_parameter is provided
+        """
+        account1 = MailAccount.objects.create(
+            name="Email1",
+            username="username1",
+            password="password1",
+            imap_server="server.example.com",
+        )
+
+        for action in [MailRule.MailAction.MOVE, MailRule.MailAction.TAG]:
+            for rule in [
+                {"name": f"Rule{action}", "account": account1.pk, "action": action},
+                {
+                    "name": f"Rule{action}",
+                    "account": account1.pk,
+                    "action": action,
+                    "action_parameter": None,
+                },
+            ]:
+                response = self.client.post(self.ENDPOINT, data=rule, format="json")
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn("action parameter is required", str(response.data))
+
+            response = self.client.post(
+                self.ENDPOINT,
+                data={
+                    "name": f"Rule{action}",
+                    "account": account1.pk,
+                    "action": action,
+                    "action_parameter": "parameter",
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+            self.assertEqual(response.data["action_parameter"], "parameter")
+
+        response = self.client.post(
+            self.ENDPOINT,
+            data={
+                "name": "RuleMarkRead",
+                "account": account1.pk,
+                "action": MailRule.MailAction.MARK_READ,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_update_mail_rule_action_parameter_required(self):
+        """
+        GIVEN:
+            - Existing mail rule with a MOVE action and action_parameter
+        WHEN:
+            - API request is made to partially update the rule
+        THEN:
+            - The existing action_parameter satisfies validation
+            - HTTP 400 is returned if action_parameter is cleared
+        """
+        account1 = MailAccount.objects.create(
+            name="Email1",
+            username="username1",
+            password="password1",
+            imap_server="server.example.com",
+        )
+        rule1 = MailRule.objects.create(
+            name="Rule1",
+            account=account1,
+            action=MailRule.MailAction.MOVE,
+            action_parameter="Archive",
+        )
+
+        response = self.client.patch(
+            f"{self.ENDPOINT}{rule1.pk}/",
+            data={"name": "Updated"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self.client.patch(
+            f"{self.ENDPOINT}{rule1.pk}/",
+            data={"action_parameter": None},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("action parameter is required", str(response.data))
+
+        rule1.refresh_from_db()
+        self.assertEqual(rule1.name, "Updated")
+        self.assertEqual(rule1.action_parameter, "Archive")
+
     def test_delete_mail_rule(self):
         """
         GIVEN:
