@@ -338,6 +338,28 @@ class TestContainerToBuildArgs(unittest.TestCase):
             ],
         )
 
+    def test_context_local_directory_ending_with_git(self):
+        c = create_compose_mock()
+
+        cnt = get_minimal_container()
+        cnt['build']['context'] = "/work/test.git"
+        cnt['build']['dockerfile'] = "Dockerfile.test"
+        args = get_minimal_args()
+
+        args = container_to_build_args(c, cnt, args, lambda path: True)
+        self.assertEqual(
+            args,
+            [
+                '-f',
+                '/work/test.git/Dockerfile.test',
+                '-t',
+                'new-image',
+                '--no-cache',
+                '--pull-always',
+                '/work/test.git',
+            ],
+        )
+
     def test_build_ssh_array(self):
         c = create_compose_mock()
 

@@ -1799,7 +1799,7 @@ def normalize_service_final(service: dict[str, Any], project_dir: str) -> dict[s
         build = service["build"]
         context = build if isinstance(build, str) else build.get("context", ".")
 
-        if not is_path_git_url(context):
+        if not is_context_git_url(context):
             context = os.path.normpath(os.path.join(project_dir, context))
         if not isinstance(service["build"], dict):
             service["build"] = {}
@@ -2788,9 +2788,25 @@ async def compose_push(compose: PodmanCompose, args: argparse.Namespace) -> None
         await compose.podman.run([], "push", [cnt["image"]])
 
 
-def is_path_git_url(path: str) -> bool:
-    r = urllib.parse.urlparse(path)
-    return r.scheme == 'git' or r.path.endswith('.git')
+def is_context_git_url(path: str) -> bool:
+    """Return whether a build context is a Git URL rather than a local path.
+
+    A path ending in ``.git`` is not sufficient: local directories are often
+    named that way. Git contexts are URLs with a recognized scheme, scp-like
+    ``host:path`` forms, or ``user@host`` forms.
+    """
+    parsed = urllib.parse.urlparse(path)
+    if parsed.scheme in ('git', 'http', 'https', 'ssh', 'file', 'rsync'):
+        return True
+    # ``github.com:org/repo.git`` and ``host:path`` parse as a scheme with an empty netloc.
+    if parsed.scheme != "" and parsed.netloc == "" and parsed.path != "":
+        return True
+    # ``user@host:path`` has no scheme. Give urlparse a scheme so it can see the user.
+    if parsed.scheme == "":
+        parsed = urllib.parse.urlparse("ssh://" + path)
+        if parsed.username:
+            return True
+    return False
 
 
 def adjust_build_ssh_key_paths(compose: PodmanCompose, agent_or_key: str) -> str:
@@ -2835,7 +2851,8 @@ def container_to_build_args(
 
     build_args = []
 
-    if not is_path_git_url(ctx):
+    # Local directories may end in ".git"; only skip the Dockerfile lookup for a Git URL.
+    if not is_context_git_url(ctx):
         custom_dockerfile_given = False
         if dockerfile:
             dockerfile = os.path.join(ctx, dockerfile)
