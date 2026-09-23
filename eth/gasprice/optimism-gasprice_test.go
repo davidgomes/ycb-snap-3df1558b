@@ -63,7 +63,7 @@ func (b *opTestBackend) Pending() (*types.Block, types.Receipts, *state.StateDB)
 }
 
 func (b *opTestBackend) ChainConfig() *params.ChainConfig {
-	return params.OptimismTestConfig
+	return params.OptimismTestCliqueConfig
 }
 
 func (b *opTestBackend) SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription {
