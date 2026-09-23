@@ -80,13 +80,15 @@ func (ge *gitlabExporter) cacheAllClient(repo *cache.RepoCache, baseURL string) 
 			return nil
 		}
 
-		if _, ok := ge.identityClient[user.Id()]; !ok {
-			client, err := buildClient(ge.conf[confKeyGitlabBaseUrl], creds[0].(*auth.Token))
-			if err != nil {
-				return err
-			}
-			ge.identityClient[user.Id()] = client
+		if _, ok := ge.identityClient[user.Id()]; ok {
+			continue
 		}
+
+		client, err := buildClient(ge.conf[confKeyGitlabBaseUrl], cred.(*auth.Token))
+		if err != nil {
+			return err
+		}
+		ge.identityClient[user.Id()] = client
 	}
 
 	return nil
