@@ -62,7 +62,10 @@ func (ge *gitlabExporter) cacheAllClient(repo repository.RepoConfig) error {
 
 	for _, cred := range creds {
 		if _, ok := ge.identityClient[cred.UserId()]; !ok {
-			client := buildClient(creds[0].(*auth.Token))
+			client, err := buildClient(ge.conf[keyGitlabBaseUrl], creds[0].(*auth.Token))
+			if err != nil {
+				return err
+			}
 			ge.identityClient[cred.UserId()] = client
 		}
 	}
@@ -153,6 +156,11 @@ func (ge *gitlabExporter) exportBug(ctx context.Context, b *cache.BugCache, sinc
 	// get gitlab bug ID
 	gitlabID, ok := snapshot.GetCreateMetadata(metaKeyGitlabId)
 	if ok {
+		if gitlabBaseURL, hasBase := snapshot.GetCreateMetadata(metaKeyGitlabBaseUrl); hasBase && gitlabBaseURL != ge.conf[keyGitlabBaseUrl] {
+			out <- core.NewExportNothing(b.Id(), "skipping issue imported from another Gitlab instance")
+			return
+		}
+
 		projectID, ok := snapshot.GetCreateMetadata(metaKeyGitlabProject)
 		if !ok {
 			err := fmt.Errorf("expected to find gitlab project id")
@@ -199,6 +207,7 @@ func (ge *gitlabExporter) exportBug(ctx context.Context, b *cache.BugCache, sinc
 				metaKeyGitlabId:      idString,
 				metaKeyGitlabUrl:     url,
 				metaKeyGitlabProject: ge.repositoryID,
+				metaKeyGitlabBaseUrl: ge.conf[keyGitlabBaseUrl],
 			},
 		)
 		if err != nil {
