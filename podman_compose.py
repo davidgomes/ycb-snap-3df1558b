@@ -2789,8 +2789,14 @@ async def compose_push(compose: PodmanCompose, args: argparse.Namespace) -> None
 
 
 def is_path_git_url(path: str) -> bool:
+    # scp-like syntax, e.g. git@github.com:containers/podman-compose.git
+    if re.match(r"^[\w.+-]+@[\w.-]+:", path):
+        return True
     r = urllib.parse.urlparse(path)
-    return r.scheme == 'git' or r.path.endswith('.git')
+    if r.scheme in ('git', 'ssh', 'git+ssh', 'ssh+git'):
+        return True
+    # local paths (no scheme) may legitimately end with ".git"
+    return r.scheme in ('http', 'https') and r.path.endswith('.git')
 
 
 def adjust_build_ssh_key_paths(compose: PodmanCompose, agent_or_key: str) -> str:

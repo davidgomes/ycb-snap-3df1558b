@@ -1,0 +1,1 @@
+Fixed `dockerfile` being ignored when the local build context directory name ends with `.git`.
