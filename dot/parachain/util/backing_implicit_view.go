@@ -18,6 +18,22 @@ const minimumRetainLength parachaintypes.BlockNumber = 2
 
 var errLeafAlreadyKnown = errors.New("leaf was already known")
 
+// ImplicitView is the implicit view of the relay chain derived from the immediate view: the active
+// leaves plus the ancestry each of them implicitly allows as relay-parents.
+type ImplicitView interface {
+	// ActivateLeaf activates a leaf, loading the implicit ancestors allowed as relay-parents under it.
+	ActivateLeaf(leafHash common.Hash, subsystemToOverseer chan<- any) error
+	// DeactivateLeaf deactivates a leaf and prunes outdated implicit ancestors, returning the pruned hashes.
+	DeactivateLeaf(leafHash common.Hash) []common.Hash
+	// AllAllowedRelayParents returns every relay-parent held in the view, in no particular order.
+	AllAllowedRelayParents() []common.Hash
+	// KnownAllowedRelayParentsUnder returns the relay-parents allowed for candidates backed in a child of
+	// blockHash, restricted to paraID when it is non-nil. Returns nil unless blockHash was seen as a leaf.
+	KnownAllowedRelayParentsUnder(blockHash common.Hash, paraID *parachaintypes.ParaID) []common.Hash
+}
+
+var _ ImplicitView = (*BackingImplicitView)(nil)
+
 // NewBackingImplicitView creates a new backing implicit view with the given runtime instance
 func NewBackingImplicitView(blockState BlockState, collatingFor *parachaintypes.ParaID) *BackingImplicitView {
 	return &BackingImplicitView{
@@ -144,7 +160,7 @@ func (view *BackingImplicitView) DeactivateLeaf(leafHash common.Hash) []common.H
 func (view *BackingImplicitView) KnownAllowedRelayParentsUnder(
 	blockHash common.Hash, paraID *parachaintypes.ParaID) []common.Hash {
 	blockInfo, exists := view.blockInfoStorage[blockHash]
-	if !exists {
+	if !exists || blockInfo.allowedRelayParents == nil {
 		return nil
 	}
 

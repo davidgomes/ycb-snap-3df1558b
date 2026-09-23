@@ -277,6 +277,22 @@ func TestBackingImplicitView_KnownAllowedRelayParentsUnder(t *testing.T) {
 		relayParents := view.KnownAllowedRelayParentsUnder(common.Hash{1}, nil)
 		require.Nil(t, relayParents)
 	})
+
+	t.Run("returns_nil_for_known_block_that_was_never_a_leaf", func(t *testing.T) {
+		t.Parallel()
+		_, _, view := setupTest(t)
+
+		paraID := parachaintypes.ParaID(100)
+		ancestorHash := common.Hash{2}
+		view.blockInfoStorage[ancestorHash] = blockInfo{
+			blockNumber:         2,
+			parentHash:          common.Hash{3},
+			allowedRelayParents: nil,
+		}
+
+		require.Nil(t, view.KnownAllowedRelayParentsUnder(ancestorHash, nil))
+		require.Nil(t, view.KnownAllowedRelayParentsUnder(ancestorHash, &paraID))
+	})
 }
 
 func TestBackingImplicitView_FetchAncestorsUpToMinBlockNumber(t *testing.T) {
